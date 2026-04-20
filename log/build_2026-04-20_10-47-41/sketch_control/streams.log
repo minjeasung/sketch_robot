@@ -1,0 +1,51 @@
+[0.589s] Invoking command in '/home/minjea/sketch_robot_ws/src/sketch_control': DEBUGINFOD_URLS=https://debuginfod.ubuntu.com PYTHONPATH=/home/minjea/sketch_robot_ws/build/sketch_control/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/sketch_control build --build-base /home/minjea/sketch_robot_ws/build/sketch_control/build install --record /home/minjea/sketch_robot_ws/build/sketch_control/install.log --single-version-externally-managed install_data
+[0.789s] running egg_info
+[0.790s] creating ../../build/sketch_control/sketch_control.egg-info
+[0.804s] writing ../../build/sketch_control/sketch_control.egg-info/PKG-INFO
+[0.804s] writing dependency_links to ../../build/sketch_control/sketch_control.egg-info/dependency_links.txt
+[0.804s] writing entry points to ../../build/sketch_control/sketch_control.egg-info/entry_points.txt
+[0.804s] writing requirements to ../../build/sketch_control/sketch_control.egg-info/requires.txt
+[0.804s] writing top-level names to ../../build/sketch_control/sketch_control.egg-info/top_level.txt
+[0.805s] writing manifest file '../../build/sketch_control/sketch_control.egg-info/SOURCES.txt'
+[0.835s] reading manifest file '../../build/sketch_control/sketch_control.egg-info/SOURCES.txt'
+[0.836s] writing manifest file '../../build/sketch_control/sketch_control.egg-info/SOURCES.txt'
+[0.836s] running build
+[0.836s] running build_py
+[0.836s] creating /home/minjea/sketch_robot_ws/build/sketch_control/build
+[0.836s] creating /home/minjea/sketch_robot_ws/build/sketch_control/build/lib
+[0.836s] creating /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control
+[0.836s] copying sketch_control/__init__.py -> /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control
+[0.836s] copying sketch_control/targets.py -> /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control
+[0.836s] copying sketch_control/moveit_executor.py -> /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control
+[0.837s] copying sketch_control/isaac_sim_ur10.py -> /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control
+[0.837s] copying sketch_control/sketch_ui.py -> /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control
+[0.837s] running install
+[0.842s] running install_lib
+[0.856s] creating /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control
+[0.856s] copying /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control/__init__.py -> /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control
+[0.856s] copying /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control/targets.py -> /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control
+[0.856s] copying /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control/moveit_executor.py -> /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control
+[0.857s] copying /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control/isaac_sim_ur10.py -> /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control
+[0.857s] copying /home/minjea/sketch_robot_ws/build/sketch_control/build/lib/sketch_control/sketch_ui.py -> /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control
+[0.857s] byte-compiling /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control/__init__.py to __init__.cpython-312.pyc
+[0.857s] byte-compiling /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control/targets.py to targets.cpython-312.pyc
+[0.858s] byte-compiling /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control/moveit_executor.py to moveit_executor.cpython-312.pyc
+[0.861s] byte-compiling /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control/isaac_sim_ur10.py to isaac_sim_ur10.cpython-312.pyc
+[0.863s] byte-compiling /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control/sketch_ui.py to sketch_ui.cpython-312.pyc
+[0.865s] running install_data
+[0.865s] creating /home/minjea/sketch_robot_ws/install/sketch_control/share/ament_index
+[0.865s] creating /home/minjea/sketch_robot_ws/install/sketch_control/share/ament_index/resource_index
+[0.865s] creating /home/minjea/sketch_robot_ws/install/sketch_control/share/ament_index/resource_index/packages
+[0.865s] copying resource/sketch_control -> /home/minjea/sketch_robot_ws/install/sketch_control/share/ament_index/resource_index/packages
+[0.865s] copying package.xml -> /home/minjea/sketch_robot_ws/install/sketch_control/share/sketch_control
+[0.865s] creating /home/minjea/sketch_robot_ws/install/sketch_control/share/sketch_control/launch
+[0.865s] copying launch/sketch_control.launch.py -> /home/minjea/sketch_robot_ws/install/sketch_control/share/sketch_control/launch
+[0.866s] creating /home/minjea/sketch_robot_ws/install/sketch_control/share/sketch_control/config
+[0.866s] copying config/objects.yaml -> /home/minjea/sketch_robot_ws/install/sketch_control/share/sketch_control/config
+[0.866s] running install_egg_info
+[0.881s] Copying ../../build/sketch_control/sketch_control.egg-info to /home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages/sketch_control-0.1.0-py3.12.egg-info
+[0.882s] running install_scripts
+[0.985s] Installing moveit_executor script to /home/minjea/sketch_robot_ws/install/sketch_control/lib/sketch_control
+[0.985s] Installing sketch_ui script to /home/minjea/sketch_robot_ws/install/sketch_control/lib/sketch_control
+[0.985s] writing list of installed files to '/home/minjea/sketch_robot_ws/build/sketch_control/install.log'
+[1.004s] Invoked command in '/home/minjea/sketch_robot_ws/src/sketch_control' returned '0': DEBUGINFOD_URLS=https://debuginfod.ubuntu.com PYTHONPATH=/home/minjea/sketch_robot_ws/build/sketch_control/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/minjea/sketch_robot_ws/install/sketch_control/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/sketch_control build --build-base /home/minjea/sketch_robot_ws/build/sketch_control/build install --record /home/minjea/sketch_robot_ws/build/sketch_control/install.log --single-version-externally-managed install_data
