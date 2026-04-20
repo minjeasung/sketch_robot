@@ -75,10 +75,19 @@ def generate_launch_description():
         output="log",
     )
 
+    # ---- 용접 비드 시각화 (RViz MarkerArray) ------------------------------
+    weld_visualizer_node = Node(
+        package='sketch_control',
+        executable='weld_visualizer',
+        name='weld_visualizer',
+        output='screen',
+    )
+
     return LaunchDescription([
         robot_state_publisher_node,
         static_tf_world_bridge,
         moveit_launch,
         sketch_ui_node,
         moveit_executor_node,
+        weld_visualizer_node,
     ])

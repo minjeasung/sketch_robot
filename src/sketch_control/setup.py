@@ -20,6 +20,7 @@ setup(
             'sketch_ui = sketch_control.sketch_ui:main',
             'moveit_executor = sketch_control.moveit_executor:main',
             'joint_calibrator = sketch_control.joint_calibrator:main',
+            'weld_visualizer = sketch_control.weld_visualizer:main',
         ],
     },
 )

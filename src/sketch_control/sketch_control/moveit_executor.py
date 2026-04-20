@@ -41,8 +41,10 @@ BRUSH_PRESS_DEPTH = 0.003  # 3mm 침투 (paint threshold 내)
 # UR10 이 원점에 있으므로 오프셋 없음
 ROBOT_ORIGIN = (0.0, 0.0, 0.0)
 
-# 붓 길이 (tool0 → brush_tip)
-BRUSH_LENGTH = 0.15
+# 토치 길이 (tool0 → torch_tip)
+TORCH_LENGTH = 0.25
+# 역호환 alias (내부 함수용)
+BRUSH_LENGTH = TORCH_LENGTH
 
 
 class MoveItExecutor(Node):
@@ -203,28 +205,28 @@ class MoveItExecutor(Node):
             co.operation = CollisionObject.ADD
             ps.world.collision_objects.append(co)
 
-        # --- 붓 (tool0 에 attached) ---
-        brush_aco = AttachedCollisionObject()
-        brush_aco.link_name = EE_LINK  # "tool0"
-        brush_aco.object.id = "brush"
-        brush_aco.object.header.frame_id = EE_LINK
-        brush_prim = SolidPrimitive()
-        brush_prim.type = SolidPrimitive.CYLINDER
-        brush_prim.dimensions = [BRUSH_LENGTH, 0.01]  # [height, radius]
-        brush_pose = Pose()
-        brush_pose.position.z = BRUSH_LENGTH / 2.0  # 중심은 +Z 7.5cm
-        brush_pose.orientation.w = 1.0  # Cylinder 기본 Z축 = tool0 Z축, 회전 불필요
-        brush_aco.object.primitives.append(brush_prim)
-        brush_aco.object.primitive_poses.append(brush_pose)
-        brush_aco.object.operation = CollisionObject.ADD
-        brush_aco.touch_links = ["tool0", "wrist_3_link", "wrist_2_link", "flange"]
-        ps.robot_state.attached_collision_objects.append(brush_aco)
+        # --- 토치 (tool0 에 attached, 단순 cylinder 25cm, radius 2.5cm) ---
+        torch_aco = AttachedCollisionObject()
+        torch_aco.link_name = EE_LINK  # "tool0"
+        torch_aco.object.id = "brush"  # id 는 기존 유지 (scene_confirmed 로직 호환)
+        torch_aco.object.header.frame_id = EE_LINK
+        torch_prim = SolidPrimitive()
+        torch_prim.type = SolidPrimitive.CYLINDER
+        torch_prim.dimensions = [TORCH_LENGTH, 0.025]  # [height, radius]
+        torch_pose = Pose()
+        torch_pose.position.z = TORCH_LENGTH / 2.0  # 중심 +Z 12.5cm
+        torch_pose.orientation.w = 1.0
+        torch_aco.object.primitives.append(torch_prim)
+        torch_aco.object.primitive_poses.append(torch_pose)
+        torch_aco.object.operation = CollisionObject.ADD
+        torch_aco.touch_links = ["tool0", "wrist_3_link", "wrist_2_link", "flange"]
+        ps.robot_state.attached_collision_objects.append(torch_aco)
         ps.robot_state.is_diff = True
 
         self.scene_pub.publish(ps)
         if not self.scene_initialized:
             self.get_logger().info(
-                "PlanningScene: wall + brush(attached to tool0) 퍼블리시")
+                "PlanningScene: 물체 + 토치(attached to tool0, 25cm) 퍼블리시")
             self.scene_initialized = True
 
     # ---- 궤적 직접 실행 (joint_command 퍼블리시) --------------------------------
@@ -337,17 +339,18 @@ class MoveItExecutor(Node):
             self.plan_cartesian()
         threading.Thread(target=_move, daemon=True).start()
 
-    # ---- brush_tip → tool0 오프셋 변환 ------------------------------------------
+    # ---- torch_tip → tool0 오프셋 변환 ------------------------------------------
     @staticmethod
     def _brush_tip_to_tool0(pose):
-        """brush_tip 기준 좌표를 tool0 기준으로 변환.
-        붓은 URDF tool0 의 로컬 +Y 축으로 뻗음 (수동 캘리브레이션으로 확정)."""
+        """torch_tip 기준 좌표를 tool0 기준으로 변환.
+        토치는 URDF tool0 의 로컬 +Y 축으로 뻗음 (수동 캘리브레이션으로 확정).
+        함수명은 내부 호환을 위해 유지."""
         q = pose.orientation
         x, y, z, w = q.x, q.y, q.z, q.w
         # 쿼터니언의 로컬 +Y 축 방향 (world 기준)
         ly = np.array([2*(x*y - z*w), 1 - 2*(x*x + z*z), 2*(y*z + x*w)])
         pos = np.array([pose.position.x, pose.position.y, pose.position.z])
-        new_pos = pos - BRUSH_LENGTH * ly
+        new_pos = pos - TORCH_LENGTH * ly
         new_pose = Pose()
         new_pose.position.x = float(new_pos[0])
         new_pose.position.y = float(new_pos[1])
@@ -423,8 +426,24 @@ class MoveItExecutor(Node):
         self.get_logger().info(
             f"웨이포인트 밀집화: {len(snapped)} -> {len(densified)}")
 
-        # brush_tip → tool0 오프셋 적용
+        # torch_tip → tool0 오프셋 적용
         tool0_wps = [self._brush_tip_to_tool0(wp) for wp in densified]
+
+        # [TORCH_CHECK] 첫 waypoint 변환 검증
+        _first_tip = densified[0]
+        _first_tool0 = tool0_wps[0]
+        _dist = np.linalg.norm([
+            _first_tip.position.x - _first_tool0.position.x,
+            _first_tip.position.y - _first_tool0.position.y,
+            _first_tip.position.z - _first_tool0.position.z,
+        ])
+        self.get_logger().info(
+            f"[TORCH_CHECK] torch_tip=({_first_tip.position.x:.3f},"
+            f"{_first_tip.position.y:.3f},{_first_tip.position.z:.3f}) → "
+            f"tool0=({_first_tool0.position.x:.3f},{_first_tool0.position.y:.3f},"
+            f"{_first_tool0.position.z:.3f}) 거리={_dist*100:.1f}cm "
+            f"(기대={TORCH_LENGTH*100:.0f}cm)"
+        )
 
         req = GetCartesianPath.Request()
         req.header.frame_id = BASE_FRAME

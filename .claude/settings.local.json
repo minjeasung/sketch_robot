@@ -21,7 +21,8 @@
       "Bash(ros2 node *)",
       "Bash(ros2 param *)",
       "Bash(ros2 topic *)",
-      "Bash(ros2 service *)"
+      "Bash(ros2 service *)",
+      "Bash(colcon build *)"
     ]
   }
 }

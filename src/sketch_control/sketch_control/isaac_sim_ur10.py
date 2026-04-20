@@ -177,8 +177,8 @@ for _op in cam_xform.GetOrderedXformOps():
     cam_xform.GetPrim().RemoveProperty(_op.GetOpName())
 cam_xform.AddTransformOp().Set(_look_at_matrix(CAMERA_EYE, CAMERA_TARGET))
 
-# ---- 붓 EoAT (UR10 마지막 링크에 부착) -----------------------------------------
-BRUSH_LENGTH = 0.15  # 15cm
+# ---- 용접 토치 EoAT (UR10 마지막 링크에 부착) ----------------------------------
+TORCH_LENGTH = 0.25  # 25cm (손잡이 12 + 목 10 + 노즐 3)
 
 # UR10 USD 내부에서 tool0 또는 ee_link prim 경로 탐색
 _tool0_path = None
@@ -194,31 +194,57 @@ if _tool0_path is None:
         if _path_str.startswith("/World/UR10") and "wrist_3_link" in _path_str.lower():
             _tool0_path = _path_str
             break
-print(f"[INFO] 붓 부착 대상 prim: {_tool0_path}")
+print(f"[INFO] 토치 부착 대상 prim: {_tool0_path}")
 
-# 기존 Brush/brush_tip 제거 후 재생성
-_brush_path = _tool0_path + "/Brush"
-_tip_path = _tool0_path + "/brush_tip"
-if stage.GetPrimAtPath(_brush_path).IsValid():
-    stage.RemovePrim(_brush_path)
-if stage.GetPrimAtPath(_tip_path).IsValid():
-    stage.RemovePrim(_tip_path)
+# 기존 Brush / brush_tip / Torch 계열 prim 모두 제거
+for _old in ["Brush", "brush_tip",
+             "Torch", "torch_tip",
+             "TorchHandle", "TorchNeck", "TorchNozzle"]:
+    _pp = _tool0_path + "/" + _old
+    if stage.GetPrimAtPath(_pp).IsValid():
+        stage.RemovePrim(_pp)
 
-# 붓: 로컬 +Z 방향으로 뻗음 (이 USD flange 의 +Z 가 시각적으로 벽 방향)
-brush = UsdGeom.Cylinder.Define(stage, _brush_path)
-brush.CreateHeightAttr(BRUSH_LENGTH)
-brush.CreateRadiusAttr(0.01)
-brush.CreateAxisAttr("Z")
-brush.CreateDisplayColorAttr([Gf.Vec3f(1.0, 0.0, 0.0)])
-_brush_xf = UsdGeom.Xformable(brush.GetPrim())
-_brush_xf.AddTranslateOp().Set(Gf.Vec3d(0, 0, BRUSH_LENGTH / 2.0))
+# 1. 손잡이 (두꺼운 원통, 0~12cm) — axis=Z (이전 붓과 같은 시각 방향)
+_handle_path = _tool0_path + "/TorchHandle"
+_handle = UsdGeom.Cylinder.Define(stage, _handle_path)
+_handle.CreateHeightAttr(0.12)
+_handle.CreateRadiusAttr(0.025)
+_handle.CreateAxisAttr("Z")
+_handle.CreateDisplayColorAttr([Gf.Vec3f(0.1, 0.1, 0.1)])
+UsdGeom.Xformable(_handle.GetPrim()).AddTranslateOp().Set(
+    Gf.Vec3d(0, 0, 0.06)  # 중심 6cm
+)
 
-# brush_tip: +Z 방향 15cm
+# 2. 목 (얇은 원통, 12~22cm)
+_neck_path = _tool0_path + "/TorchNeck"
+_neck = UsdGeom.Cylinder.Define(stage, _neck_path)
+_neck.CreateHeightAttr(0.10)
+_neck.CreateRadiusAttr(0.012)
+_neck.CreateAxisAttr("Z")
+_neck.CreateDisplayColorAttr([Gf.Vec3f(0.6, 0.6, 0.6)])
+UsdGeom.Xformable(_neck.GetPrim()).AddTranslateOp().Set(
+    Gf.Vec3d(0, 0, 0.17)  # 중심 17cm
+)
+
+# 3. 노즐 (더 얇은 원통, 22~25cm)
+_nozzle_path = _tool0_path + "/TorchNozzle"
+_nozzle = UsdGeom.Cylinder.Define(stage, _nozzle_path)
+_nozzle.CreateHeightAttr(0.03)
+_nozzle.CreateRadiusAttr(0.008)
+_nozzle.CreateAxisAttr("Z")
+_nozzle.CreateDisplayColorAttr([Gf.Vec3f(0.8, 0.8, 0.8)])
+UsdGeom.Xformable(_nozzle.GetPrim()).AddTranslateOp().Set(
+    Gf.Vec3d(0, 0, 0.235)  # 중심 23.5cm
+)
+
+# 4. torch_tip (TCP, 25cm 끝점) — flange 의 +Z 방향 (=URDF tool0 +Y 방향)
+_tip_path = _tool0_path + "/torch_tip"
 _tip = UsdGeom.Xform.Define(stage, _tip_path)
 UsdGeom.Xformable(_tip.GetPrim()).AddTranslateOp().Set(
-    Gf.Vec3d(0, 0, BRUSH_LENGTH))
-BRUSH_TIP_PATH = _tip_path
-print(f"[OK] 붓 부착: axis=Z, 길이={BRUSH_LENGTH*100:.0f}cm, tip={BRUSH_TIP_PATH}")
+    Gf.Vec3d(0, 0, TORCH_LENGTH)
+)
+TORCH_TIP_PATH = _tip_path
+print(f"[OK] 토치 부착: 길이 {TORCH_LENGTH*100:.0f}cm, tip={TORCH_TIP_PATH}")
 
 # ---- 물리 충돌 강제 적용 (world.reset() 전) ------------------------------------
 # 각 활성 물체에 Collision 재확인
@@ -309,7 +335,10 @@ og.Controller.edit(
         ],
         keys.SET_VALUES: [
             ("PubTF.inputs:parentPrim", [Sdf.Path("/World")]),
-            ("PubTF.inputs:targetPrims", [Sdf.Path("/World/SketchCamera")]),
+            ("PubTF.inputs:targetPrims", [
+                Sdf.Path("/World/SketchCamera"),
+                Sdf.Path(TORCH_TIP_PATH),
+            ]),
             ("PubTF.inputs:topicName", "/tf"),
         ],
     },
@@ -366,21 +395,14 @@ try:
 except Exception as _e:
     print(f"[ERROR] READY_POSE 설정 실패: {_e}")
 
-# tool0 prim 참조 (paint callback 에서 사용)
-_tool0_prim = stage.GetPrimAtPath(_tool0_path)
-
-# ---- Paint 상수 (초기 검증 로그에서도 사용) -----------------------------------
-PAINT_THRESHOLD = 0.015
-PAINT_DOT_RADIUS = 0.003
-
-# ---- brush_tip prim 초기 검증 -------------------------------------------------
-_tip_prim_check = stage.GetPrimAtPath(BRUSH_TIP_PATH)
+# ---- torch_tip prim 초기 검증 -------------------------------------------------
+_tip_prim_check = stage.GetPrimAtPath(TORCH_TIP_PATH)
 if _tip_prim_check.IsValid():
     _xfc_init = UsdGeom.XformCache()
     _wm_init = _xfc_init.GetLocalToWorldTransform(_tip_prim_check)
     _tip_init_pos = _wm_init.ExtractTranslation()
-    print(f"[INIT] brush_tip prim 경로: {BRUSH_TIP_PATH}")
-    print(f"[INIT] brush_tip world 위치: "
+    print(f"[INIT] torch_tip prim 경로: {TORCH_TIP_PATH}")
+    print(f"[INIT] torch_tip world 위치: "
           f"({_tip_init_pos[0]:.3f}, {_tip_init_pos[1]:.3f}, {_tip_init_pos[2]:.3f})")
     print(f"[INIT] active plane point: "
           f"({ACTIVE_PLANE_POINT[0]:.3f}, {ACTIVE_PLANE_POINT[1]:.3f}, "
@@ -391,162 +413,18 @@ if _tip_prim_check.IsValid():
         _tip_init_pos[2] - ACTIVE_PLANE_POINT[2],
     ])
     _init_signed = float(np.dot(_init_delta, ACTIVE_PLANE_NORMAL))
-    print(f"[INIT] 평면까지 signed_dist = {_init_signed*1000:+.1f}mm "
-          f"(접촉범위 -5mm ~ +{PAINT_THRESHOLD*1000:.0f}mm)")
+    print(f"[INIT] 평면까지 signed_dist = {_init_signed*1000:+.1f}mm")
 else:
-    print(f"[ERROR] brush_tip prim 없음! 페인트 callback 작동 안 함")
-    print(f"        기대 경로: {BRUSH_TIP_PATH}")
-    for _alt in ["/World/UR10/tool0/brush_tip",
-                 "/World/UR10/ee_link/brush_tip",
-                 "/World/UR10/wrist_3_link/brush_tip"]:
-        if stage.GetPrimAtPath(_alt).IsValid():
-            print(f"        대체 존재: {_alt}")
+    print(f"[ERROR] torch_tip prim 없음! 기대 경로: {TORCH_TIP_PATH}")
 
-# ======================== 붓 페인팅 (연속 선 + 진단 로그) ========================
-import time as _pytime
-
-PAINT_LINE_RADIUS = 0.004
-PAINT_CONTACT_THRESHOLD = 0.020      # 평면 바깥 20mm 이내면 접촉
-PAINT_BEHIND_THRESHOLD = 0.010       # 평면 안쪽 10mm 까지 허용
-PAINT_MIN_STEP = 0.002
-PAINT_MAX_STEP = 0.050
-PAINT_SNAP_OFFSET = 0.002
-PAINT_COLOR = Gf.Vec3f(1.0, 0.0, 0.0)
-PAINT_MAX_SEGMENTS = 3000
-
-# 벽 평면 (active target 기준)
-WALL_PLANE_POINT = np.array(ACTIVE_PLANE_POINT, dtype=float)
-WALL_NORMAL = np.array(ACTIVE_PLANE_NORMAL, dtype=float)
-
-paint_state = {
-    "segment_count": 0,
-    "last_contact_pos": None,
-    "container_created": False,
-    "last_log_time": 0.0,
-}
-
-
-def _paint_dbg(msg):
-    now = _pytime.time()
-    if now - paint_state["last_log_time"] > 0.5:
-        print(f"[PAINT_DBG] {msg}")
-        paint_state["last_log_time"] = now
-
-
-def _ensure_paint_container():
-    if not paint_state["container_created"]:
-        UsdGeom.Xform.Define(stage, "/World/PaintStrokes")
-        paint_state["container_created"] = True
-
-
-def _project_to_wall(world_pos):
-    to_point = world_pos - WALL_PLANE_POINT
-    dist_along_normal = float(np.dot(to_point, WALL_NORMAL))
-    projected = world_pos - WALL_NORMAL * dist_along_normal
-    projected = projected + WALL_NORMAL * PAINT_SNAP_OFFSET
-    return projected
-
-
-def _add_segment(p1, p2):
-    if paint_state["segment_count"] >= PAINT_MAX_SEGMENTS:
-        return
-    mid = (p1 + p2) * 0.5
-    diff = p2 - p1
-    length = float(np.linalg.norm(diff))
-    if length < 1e-6:
-        return
-    direction = diff / length
-
-    paint_state["segment_count"] += 1
-    idx = paint_state["segment_count"]
-    seg_path = f"/World/PaintStrokes/seg_{idx:05d}"
-    cyl = UsdGeom.Cylinder.Define(stage, seg_path)
-    cyl.CreateHeightAttr(length)
-    cyl.CreateRadiusAttr(PAINT_LINE_RADIUS)
-    cyl.CreateAxisAttr("Z")
-    cyl.CreateDisplayColorAttr([PAINT_COLOR])
-
-    z_axis = np.array([0.0, 0.0, 1.0])
-    dot = float(np.clip(np.dot(z_axis, direction), -1.0, 1.0))
-    if dot > 0.9999:
-        rot_quat = Gf.Quatd(1.0, 0.0, 0.0, 0.0)
-    elif dot < -0.9999:
-        rot_quat = Gf.Quatd(0.0, 1.0, 0.0, 0.0)
-    else:
-        axis = np.cross(z_axis, direction)
-        axis = axis / np.linalg.norm(axis)
-        angle = np.arccos(dot)
-        s = np.sin(angle / 2.0)
-        rot_quat = Gf.Quatd(
-            float(np.cos(angle / 2.0)),
-            float(axis[0] * s), float(axis[1] * s), float(axis[2] * s),
-        )
-
-    xform = UsdGeom.Xformable(cyl.GetPrim())
-    xform.AddTranslateOp().Set(Gf.Vec3d(float(mid[0]), float(mid[1]), float(mid[2])))
-    xform.AddOrientOp().Set(rot_quat)
-
-
-def on_paint_step(step):
-    tip_prim = stage.GetPrimAtPath(BRUSH_TIP_PATH)
-    if not tip_prim.IsValid():
-        _paint_dbg(f"brush_tip prim 없음: {BRUSH_TIP_PATH}")
-        return
-
-    xfc = UsdGeom.XformCache()
-    world_m = xfc.GetLocalToWorldTransform(tip_prim)
-    tip_pos_gf = world_m.ExtractTranslation()
-    tip_pos = np.array([float(tip_pos_gf[0]), float(tip_pos_gf[1]), float(tip_pos_gf[2])])
-
-    to_point = tip_pos - WALL_PLANE_POINT
-    signed_dist = float(np.dot(to_point, WALL_NORMAL))
-    # signed_dist > 0: 평면 바깥(법선 방향)
-    # signed_dist < 0: 평면 안쪽(침투)
-
-    _paint_dbg(
-        f"tip=({tip_pos[0]:+.3f},{tip_pos[1]:+.3f},{tip_pos[2]:+.3f}) "
-        f"signed_dist={signed_dist*1000:+.1f}mm "
-        f"범위=[-{PAINT_BEHIND_THRESHOLD*1000:.0f}mm, +{PAINT_CONTACT_THRESHOLD*1000:.0f}mm] "
-        f"segments={paint_state['segment_count']}"
-    )
-
-    if not (-PAINT_BEHIND_THRESHOLD <= signed_dist <= PAINT_CONTACT_THRESHOLD):
-        paint_state["last_contact_pos"] = None
-        return
-
-    current = _project_to_wall(tip_pos)
-    last = paint_state["last_contact_pos"]
-
-    if last is None:
-        _ensure_paint_container()
-        paint_state["last_contact_pos"] = current
-        _paint_dbg(f"첫 접촉 at ({current[0]:.3f},{current[1]:.3f},{current[2]:.3f})")
-        return
-
-    gap = float(np.linalg.norm(current - last))
-    if gap < PAINT_MIN_STEP:
-        return
-    if gap > PAINT_MAX_STEP:
-        paint_state["last_contact_pos"] = current
-        return
-
-    _ensure_paint_container()
-    _add_segment(last, current)
-    paint_state["last_contact_pos"] = current
-
-
-# 기존 callback 제거 후 재등록
-try:
-    world.remove_physics_callback("paint_brush")
-except Exception:
-    pass
-world.add_physics_callback("paint_brush", on_paint_step)
-print("[OK] 붓 페인팅 callback 등록 (연속 선, 진단 로그 포함)")
+# ※ 페인트 시스템은 제거됨. 용접 비드 시각화는 weld_visualizer 노드(RViz)에서 수행.
 
 print("=" * 60)
-print("Isaac Sim UR10 씬 준비 완료 (objects.yaml 기반)")
+print("Isaac Sim UR10 씬 준비 완료 (Phase 1.6 - 용접 토치)")
 print(f"  UR10: (0, 0, 0) 원점")
 print(f"  Active target: {_active_name} (face={_active_obj['sketch_face']})")
+print(f"  EoAT: 토치 ({TORCH_LENGTH*100:.0f}cm), tip={TORCH_TIP_PATH}")
 print(f"  카메라: {CAMERA_EYE} -> {CAMERA_TARGET}")
 print("  토픽: /camera/image_raw, /camera/camera_info, /tf, /joint_states")
+print("  용접 비드는 weld_visualizer 노드가 /weld_beads 에 퍼블리시")
 print("=" * 60)

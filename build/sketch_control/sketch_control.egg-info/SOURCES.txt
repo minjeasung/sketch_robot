@@ -1,13 +1,6 @@
 package.xml
 setup.cfg
 setup.py
-../../build/sketch_control/sketch_control.egg-info/PKG-INFO
-../../build/sketch_control/sketch_control.egg-info/SOURCES.txt
-../../build/sketch_control/sketch_control.egg-info/dependency_links.txt
-../../build/sketch_control/sketch_control.egg-info/entry_points.txt
-../../build/sketch_control/sketch_control.egg-info/requires.txt
-../../build/sketch_control/sketch_control.egg-info/top_level.txt
-../../build/sketch_control/sketch_control.egg-info/zip-safe
 config/objects.yaml
 launch/moveit_with_rsp.launch.py
 launch/sketch_control.launch.py
@@ -18,3 +11,11 @@ sketch_control/joint_calibrator.py
 sketch_control/moveit_executor.py
 sketch_control/sketch_ui.py
 sketch_control/targets.py
+sketch_control/weld_visualizer.py
+sketch_control.egg-info/PKG-INFO
+sketch_control.egg-info/SOURCES.txt
+sketch_control.egg-info/dependency_links.txt
+sketch_control.egg-info/entry_points.txt
+sketch_control.egg-info/requires.txt
+sketch_control.egg-info/top_level.txt
+sketch_control.egg-info/zip-safe
