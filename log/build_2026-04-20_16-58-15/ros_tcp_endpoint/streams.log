@@ -1,0 +1,41 @@
+[0.590s] Invoking command in '/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint': DEBUGINFOD_URLS=https://debuginfod.ubuntu.com PYTHONPATH=/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/build --no-deps symlink_data
+[0.678s] /usr/lib/python3/dist-packages/setuptools/dist.py:744: SetuptoolsDeprecationWarning: Invalid dash-separated options
+[0.678s] !!
+[0.678s] 
+[0.678s]         ********************************************************************************
+[0.678s]         Usage of dash-separated 'script-dir' will not be supported in future
+[0.679s]         versions. Please use the underscore name 'script_dir' instead.
+[0.679s] 
+[0.679s]         This deprecation is overdue, please update your project and remove deprecated
+[0.679s]         calls to avoid build errors in the future.
+[0.679s] 
+[0.679s]         See https://setuptools.pypa.io/en/latest/userguide/declarative_config.html for details.
+[0.679s]         ********************************************************************************
+[0.679s] 
+[0.679s] !!
+[0.679s]   opt = self.warn_dash_deprecation(opt, section)
+[0.824s] running develop
+[0.978s] running egg_info
+[0.978s] creating ros_tcp_endpoint.egg-info
+[0.993s] writing ros_tcp_endpoint.egg-info/PKG-INFO
+[0.993s] writing dependency_links to ros_tcp_endpoint.egg-info/dependency_links.txt
+[0.993s] writing entry points to ros_tcp_endpoint.egg-info/entry_points.txt
+[0.993s] writing requirements to ros_tcp_endpoint.egg-info/requires.txt
+[0.993s] writing top-level names to ros_tcp_endpoint.egg-info/top_level.txt
+[0.993s] writing manifest file 'ros_tcp_endpoint.egg-info/SOURCES.txt'
+[1.023s] reading manifest file 'ros_tcp_endpoint.egg-info/SOURCES.txt'
+[1.023s] writing manifest file 'ros_tcp_endpoint.egg-info/SOURCES.txt'
+[1.039s] running build_ext
+[1.039s] Creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/lib/python3.12/site-packages/ros-tcp-endpoint.egg-link (link to .)
+[1.039s] Installing default_server_endpoint script to /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/lib/ros_tcp_endpoint
+[1.039s] 
+[1.040s] Installed /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint
+[1.040s] running symlink_data
+[1.040s] creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index
+[1.040s] creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index/resource_index
+[1.040s] creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index/resource_index/packages
+[1.040s] symbolically linking /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/resource/ros_tcp_endpoint -> /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index/resource_index/packages
+[1.040s] symbolically linking /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/package.xml -> /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ros_tcp_endpoint
+[1.040s] creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ros_tcp_endpoint/launch
+[1.040s] symbolically linking /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/launch/endpoint.py -> /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ros_tcp_endpoint/launch
+[1.061s] Invoked command in '/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint' returned '0': DEBUGINFOD_URLS=https://debuginfod.ubuntu.com PYTHONPATH=/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/build --no-deps symlink_data

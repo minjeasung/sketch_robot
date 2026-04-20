@@ -1,0 +1,57 @@
+[0.000000] (-) TimerEvent: {}
+[0.000136] (-) JobUnselected: {'identifier': 'sketch_control'}
+[0.000285] (ros_tcp_endpoint) JobQueued: {'identifier': 'ros_tcp_endpoint', 'dependencies': OrderedDict()}
+[0.000372] (ros_tcp_endpoint) JobStarted: {'identifier': 'ros_tcp_endpoint'}
+[0.099886] (-) TimerEvent: {}
+[0.200024] (-) TimerEvent: {}
+[0.300155] (-) TimerEvent: {}
+[0.400294] (-) TimerEvent: {}
+[0.500429] (-) TimerEvent: {}
+[0.589224] (ros_tcp_endpoint) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'develop', '--editable', '--build-directory', '/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/build', '--no-deps', 'symlink_data'], 'cwd': '/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint', 'env': {'GJS_DEBUG_TOPICS': 'JS ERROR;JS LOG', 'LESSOPEN': '| /usr/bin/lesspipe %s', 'VSCODE_CWD': '/home/minjea', 'VSCODE_ESM_ENTRYPOINT': 'vs/workbench/api/node/extensionHostProcess', 'USER': 'minjea', 'CLAUDE_CODE_ENTRYPOINT': 'claude-vscode', 'VSCODE_NLS_CONFIG': '{"userLocale":"en-us","osLocale":"en-us","resolvedLanguage":"en","defaultMessagesFile":"/usr/share/code/resources/app/out/nls.messages.json","locale":"en-us","availableLanguages":{}}', 'GZ_CONFIG_PATH': '/opt/ros/jazzy/opt/sdformat_vendor/share/gz', 'GIT_EDITOR': 'true', 'VSCODE_HANDLES_UNCAUGHT_ERRORS': 'true', 'XDG_SESSION_TYPE': 'x11', 'CLAUDE_AGENT_SDK_VERSION': '0.2.114', 'CLUTTER_DISABLE_MIPMAPPED_TEXT': '1', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/opt/ros/jazzy/opt/sdformat_vendor/lib:/opt/ros/jazzy/opt/rviz_ogre_vendor/lib:/opt/ros/jazzy/lib/x86_64-linux-gnu:/opt/ros/jazzy/opt/gz_math_vendor/lib:/opt/ros/jazzy/opt/gz_utils_vendor/lib:/opt/ros/jazzy/opt/gz_tools_vendor/lib:/opt/ros/jazzy/opt/gz_cmake_vendor/lib:/opt/ros/jazzy/lib', 'HOME': '/home/minjea', 'CHROME_DESKTOP': 'code.desktop', 'OLDPWD': '/home/minjea/sketch_robot_ws/src', 'DESKTOP_SESSION': 'ubuntu', 'VSCODE_IPC_HOOK': '/run/user/1000/vscode-d49e911e-1.11-main.sock', 'GIO_LAUNCHED_DESKTOP_FILE': '/usr/share/applications/code.desktop', 'ROS_PYTHON_VERSION': '3', 'GNOME_SHELL_SESSION_MODE': 'ubuntu', 'GTK_MODULES': 'gail:atk-bridge', 'SDL_IM_MODULE': 'fcitx', 'COPILOT_OTEL_FILE_EXPORTER_PATH': '/dev/null', 'MANAGERPID': '17937', 'SYSTEMD_EXEC_PID': '18380', 'GSM_SKIP_SSH_AGENT_WORKAROUND': 'true', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', 'GIO_LAUNCHED_DESKTOP_FILE_PID': '19035', 'VSCODE_CRASH_REPORTER_PROCESS_TYPE': 'extensionHost', 'DEBUGINFOD_URLS': 'https://debuginfod.ubuntu.com', 'VSCODE_L10N_BUNDLE_LOCATION': '', 'APPLICATION_INSIGHTS_NO_STATSBEAT': 'true', 'ROS_DISTRO': 'jazzy', 'GTK_IM_MODULE': 'fcitx', 'LOGNAME': 'minjea', 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT': 'true', 'JOURNAL_STREAM': '9:52665', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'MEMORY_PRESSURE_WATCH': '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/session.slice/org.gnome.Shell@x11.service/memory.pressure', 'XDG_SESSION_CLASS': 'user', 'USERNAME': 'minjea', 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE': 'delta', 'GNOME_DESKTOP_SESSION_ID': 'this-is-deprecated', 'FC_FONTATIONS': '1', 'WINDOWPATH': '2', 'MCP_CONNECTION_NONBLOCKING': 'true', 'PATH': '/usr/bin:/opt/ros/jazzy/opt/gz_tools_vendor/bin:/opt/ros/jazzy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin', 'SESSION_MANAGER': 'local/minjea:@/tmp/.ICE-unix/18340,unix/minjea:/tmp/.ICE-unix/18340', 'INVOCATION_ID': '630766c5ded04b0b93ae40da66e0a0b9', 'COREPACK_ENABLE_AUTO_PIN': '0', 'XDG_MENU_PREFIX': 'gnome-', 'XDG_RUNTIME_DIR': '/run/user/1000', 'GDK_BACKEND': 'x11', 'DISPLAY': ':1', 'NoDefaultCurrentDirectoryInExePath': '1', 'LANG': 'en_US.UTF-8', 'XDG_CURRENT_DESKTOP': 'ubuntu:GNOME', 'XMODIFIERS': '@im=fcitx', 'XDG_SESSION_DESKTOP': 'ubuntu', 'XAUTHORITY': '/run/user/1000/gdm/Xauthority', 'COPILOT_OTEL_ENABLED': 'true', 'SSH_AUTH_SOCK': '/run/user/1000/keyring/ssh', 'AMENT_PREFIX_PATH': '/opt/ros/jazzy', 'SHELL': '/bin/bash', 'QT_ACCESSIBILITY': '1', 'ELECTRON_RUN_AS_NODE': '1', 'GDMSESSION': 'ubuntu', 'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING': 'true', 'LESSCLOSE': '/usr/bin/lesspipe %s %s', 'CLAUDECODE': '1', 'GPG_AGENT_INFO': '/run/user/1000/gnupg/S.gpg-agent:0:1', 'GJS_DEBUG_OUTPUT': 'stderr', 'VIRTUAL_ENV': '/usr', 'ROS_AUTOMATIC_DISCOVERY_RANGE': 'SUBNET', 'QT_IM_MODULE': 'fcitx', 'PWD': '/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint', 'XDG_CONFIG_DIRS': '/etc/xdg/xdg-ubuntu:/etc/xdg', 'VSCODE_CODE_CACHE_PATH': '/home/minjea/.config/Code/CachedData/41dd792b5e652393e7787322889ed5fdc58bd75b', 'CLUTTER_IM_MODULE': 'xim', 'XDG_DATA_DIRS': '/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop', 'CLAUDE_CODE_EXECPATH': '/home/minjea/.vscode/extensions/anthropic.claude-code-2.1.114-linux-x64/resources/native-binary/claude', 'PYTHONPATH': '/home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/lib/python3.12/site-packages:/opt/ros/jazzy/lib/python3.12/site-packages', 'COLCON': '1', 'MEMORY_PRESSURE_WRITE': 'c29tZSAyMDAwMDAgMjAwMDAwMAA=', 'CMAKE_PREFIX_PATH': '/opt/ros/jazzy/opt/sdformat_vendor:/opt/ros/jazzy/opt/gz_math_vendor:/opt/ros/jazzy/opt/gz_utils_vendor:/opt/ros/jazzy/opt/gz_tools_vendor:/opt/ros/jazzy/opt/gz_cmake_vendor', 'VSCODE_PID': '19035', 'COPILOT_OTEL_EXPORTER_TYPE': 'file'}, 'shell': False}
+[0.600489] (-) TimerEvent: {}
+[0.678545] (ros_tcp_endpoint) StderrLine: {'line': b'/usr/lib/python3/dist-packages/setuptools/dist.py:744: SetuptoolsDeprecationWarning: Invalid dash-separated options\n'}
+[0.678719] (ros_tcp_endpoint) StderrLine: {'line': b'!!\n'}
+[0.678799] (ros_tcp_endpoint) StderrLine: {'line': b'\n'}
+[0.678866] (ros_tcp_endpoint) StderrLine: {'line': b'        ********************************************************************************\n'}
+[0.678930] (ros_tcp_endpoint) StderrLine: {'line': b"        Usage of dash-separated 'script-dir' will not be supported in future\n"}
+[0.678994] (ros_tcp_endpoint) StderrLine: {'line': b"        versions. Please use the underscore name 'script_dir' instead.\n"}
+[0.679067] (ros_tcp_endpoint) StderrLine: {'line': b'\n'}
+[0.679128] (ros_tcp_endpoint) StderrLine: {'line': b'        This deprecation is overdue, please update your project and remove deprecated\n'}
+[0.679208] (ros_tcp_endpoint) StderrLine: {'line': b'        calls to avoid build errors in the future.\n'}
+[0.679296] (ros_tcp_endpoint) StderrLine: {'line': b'\n'}
+[0.679363] (ros_tcp_endpoint) StderrLine: {'line': b'        See https://setuptools.pypa.io/en/latest/userguide/declarative_config.html for details.\n'}
+[0.679430] (ros_tcp_endpoint) StderrLine: {'line': b'        ********************************************************************************\n'}
+[0.679593] (ros_tcp_endpoint) StderrLine: {'line': b'\n'}
+[0.679705] (ros_tcp_endpoint) StderrLine: {'line': b'!!\n'}
+[0.679842] (ros_tcp_endpoint) StderrLine: {'line': b'  opt = self.warn_dash_deprecation(opt, section)\n'}
+[0.700559] (-) TimerEvent: {}
+[0.800671] (-) TimerEvent: {}
+[0.824456] (ros_tcp_endpoint) StdoutLine: {'line': b'running develop\n'}
+[0.900751] (-) TimerEvent: {}
+[0.978172] (ros_tcp_endpoint) StdoutLine: {'line': b'running egg_info\n'}
+[0.978320] (ros_tcp_endpoint) StdoutLine: {'line': b'creating ros_tcp_endpoint.egg-info\n'}
+[0.993041] (ros_tcp_endpoint) StdoutLine: {'line': b'writing ros_tcp_endpoint.egg-info/PKG-INFO\n'}
+[0.993227] (ros_tcp_endpoint) StdoutLine: {'line': b'writing dependency_links to ros_tcp_endpoint.egg-info/dependency_links.txt\n'}
+[0.993382] (ros_tcp_endpoint) StdoutLine: {'line': b'writing entry points to ros_tcp_endpoint.egg-info/entry_points.txt\n'}
+[0.993652] (ros_tcp_endpoint) StdoutLine: {'line': b'writing requirements to ros_tcp_endpoint.egg-info/requires.txt\n'}
+[0.993735] (ros_tcp_endpoint) StdoutLine: {'line': b'writing top-level names to ros_tcp_endpoint.egg-info/top_level.txt\n'}
+[0.993810] (ros_tcp_endpoint) StdoutLine: {'line': b"writing manifest file 'ros_tcp_endpoint.egg-info/SOURCES.txt'\n"}
+[1.000816] (-) TimerEvent: {}
+[1.023166] (ros_tcp_endpoint) StdoutLine: {'line': b"reading manifest file 'ros_tcp_endpoint.egg-info/SOURCES.txt'\n"}
+[1.023633] (ros_tcp_endpoint) StdoutLine: {'line': b"writing manifest file 'ros_tcp_endpoint.egg-info/SOURCES.txt'\n"}
+[1.038939] (ros_tcp_endpoint) StdoutLine: {'line': b'running build_ext\n'}
+[1.039104] (ros_tcp_endpoint) StdoutLine: {'line': b'Creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/lib/python3.12/site-packages/ros-tcp-endpoint.egg-link (link to .)\n'}
+[1.039477] (ros_tcp_endpoint) StdoutLine: {'line': b'Installing default_server_endpoint script to /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/lib/ros_tcp_endpoint\n'}
+[1.039685] (ros_tcp_endpoint) StdoutLine: {'line': b'\n'}
+[1.039892] (ros_tcp_endpoint) StdoutLine: {'line': b'Installed /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint\n'}
+[1.040230] (ros_tcp_endpoint) StdoutLine: {'line': b'running symlink_data\n'}
+[1.040317] (ros_tcp_endpoint) StdoutLine: {'line': b'creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index\n'}
+[1.040393] (ros_tcp_endpoint) StdoutLine: {'line': b'creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index/resource_index\n'}
+[1.040463] (ros_tcp_endpoint) StdoutLine: {'line': b'creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index/resource_index/packages\n'}
+[1.040544] (ros_tcp_endpoint) StdoutLine: {'line': b'symbolically linking /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/resource/ros_tcp_endpoint -> /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ament_index/resource_index/packages\n'}
+[1.040618] (ros_tcp_endpoint) StdoutLine: {'line': b'symbolically linking /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/package.xml -> /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ros_tcp_endpoint\n'}
+[1.040686] (ros_tcp_endpoint) StdoutLine: {'line': b'creating /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ros_tcp_endpoint/launch\n'}
+[1.040755] (ros_tcp_endpoint) StdoutLine: {'line': b'symbolically linking /home/minjea/sketch_robot_ws/build/ros_tcp_endpoint/launch/endpoint.py -> /home/minjea/sketch_robot_ws/install/ros_tcp_endpoint/share/ros_tcp_endpoint/launch\n'}
+[1.060917] (ros_tcp_endpoint) CommandEnded: {'returncode': 0}
+[1.069577] (ros_tcp_endpoint) JobEnded: {'identifier': 'ros_tcp_endpoint', 'rc': 0}
+[1.070078] (-) EventReactorShutdown: {}

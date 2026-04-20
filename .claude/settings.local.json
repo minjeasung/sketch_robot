@@ -22,7 +22,11 @@
       "Bash(ros2 param *)",
       "Bash(ros2 topic *)",
       "Bash(ros2 service *)",
-      "Bash(colcon build *)"
+      "Bash(colcon build *)",
+      "Bash(kill -9 23501 23502 23503 sleep 1 ps aux)",
+      "Bash(sudo ufw *)",
+      "Bash(ufw status *)",
+      "Read(//etc/ufw/**)"
     ]
   }
 }

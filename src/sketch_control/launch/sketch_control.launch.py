@@ -83,6 +83,18 @@ def generate_launch_description():
         output='screen',
     )
 
+    # ---- ROS-TCP-Endpoint (Unity 연결용 TCP 서버) -------------------------
+    ros_tcp_endpoint_node = Node(
+        package='ros_tcp_endpoint',
+        executable='default_server_endpoint',
+        name='ros_tcp_endpoint',
+        output='screen',
+        parameters=[
+            {'ROS_IP': '0.0.0.0'},
+            {'ROS_TCP_PORT': 10000},
+        ],
+    )
+
     return LaunchDescription([
         robot_state_publisher_node,
         static_tf_world_bridge,
@@ -90,4 +102,5 @@ def generate_launch_description():
         sketch_ui_node,
         moveit_executor_node,
         weld_visualizer_node,
+        ros_tcp_endpoint_node,
     ])
