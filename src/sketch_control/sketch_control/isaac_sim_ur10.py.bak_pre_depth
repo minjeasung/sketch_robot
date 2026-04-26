@@ -303,18 +303,13 @@ og.Controller.edit(
         keys.CREATE_NODES: [
             ("Tick", NT_TICK), ("CreateRP", NT_CREATE_RP),
             ("CamRgb", NT_CAM), ("CamInfo", NT_CAMINFO),
-            ("CamDepth", NT_CAM), ("CamInfoDepth", NT_CAMINFO),
         ],
         keys.CONNECT: [
             ("Tick.outputs:tick", "CreateRP.inputs:execIn"),
             ("CreateRP.outputs:execOut", "CamRgb.inputs:execIn"),
             ("CreateRP.outputs:execOut", "CamInfo.inputs:execIn"),
-            ("CreateRP.outputs:execOut", "CamDepth.inputs:execIn"),
-            ("CreateRP.outputs:execOut", "CamInfoDepth.inputs:execIn"),
             ("CreateRP.outputs:renderProductPath", "CamRgb.inputs:renderProductPath"),
             ("CreateRP.outputs:renderProductPath", "CamInfo.inputs:renderProductPath"),
-            ("CreateRP.outputs:renderProductPath", "CamDepth.inputs:renderProductPath"),
-            ("CreateRP.outputs:renderProductPath", "CamInfoDepth.inputs:renderProductPath"),
         ],
         keys.SET_VALUES: [
             ("CreateRP.inputs:cameraPrim", [Sdf.Path(CAMERA_PATH)]),
@@ -323,10 +318,6 @@ og.Controller.edit(
             ("CamRgb.inputs:type", "rgb"), ("CamRgb.inputs:frameId", "sketch_camera"),
             ("CamInfo.inputs:topicName", "/camera/camera_info"),
             ("CamInfo.inputs:frameId", "sketch_camera"),
-            ("CamDepth.inputs:topicName", "/camera/depth/image_raw"),
-            ("CamDepth.inputs:type", "depth"), ("CamDepth.inputs:frameId", "sketch_camera"),
-            ("CamInfoDepth.inputs:topicName", "/camera/depth/camera_info"),
-            ("CamInfoDepth.inputs:frameId", "sketch_camera"),
         ],
     },
 )
@@ -434,7 +425,6 @@ print(f"  UR10: (0, 0, 0) 원점")
 print(f"  Active target: {_active_name} (face={_active_obj['sketch_face']})")
 print(f"  EoAT: 토치 ({TORCH_LENGTH*100:.0f}cm), tip={TORCH_TIP_PATH}")
 print(f"  카메라: {CAMERA_EYE} -> {CAMERA_TARGET}")
-print("  토픽: /camera/image_raw, /camera/camera_info,")
-print("         /camera/depth/image_raw, /camera/depth/camera_info, /tf, /joint_states")
+print("  토픽: /camera/image_raw, /camera/camera_info, /tf, /joint_states")
 print("  용접 비드는 weld_visualizer 노드가 /weld_beads 에 퍼블리시")
 print("=" * 60)
