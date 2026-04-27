@@ -2,7 +2,10 @@ package.xml
 setup.cfg
 setup.py
 config/objects.yaml
+launch/core.launch.py
 launch/moveit_with_rsp.launch.py
+launch/phase1_python.launch.py
+launch/phase2_unity.launch.py
 launch/sketch_control.launch.py
 resource/sketch_control
 sketch_control/__init__.py

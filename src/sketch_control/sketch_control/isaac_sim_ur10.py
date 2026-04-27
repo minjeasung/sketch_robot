@@ -294,7 +294,7 @@ NT_ARTIC_CTRL = _node_type("isaacsim.core.nodes.IsaacArticulationController",
                             "omni.isaac.core_nodes.IsaacArticulationController")
 
 keys = og.Controller.Keys
-CAM_W, CAM_H = 640, 480
+CAM_W, CAM_H = 320, 240
 
 # ---- CameraGraph --------------------------------------------------------------
 og.Controller.edit(
