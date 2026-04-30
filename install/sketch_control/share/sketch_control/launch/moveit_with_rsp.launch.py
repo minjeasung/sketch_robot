@@ -1,1 +1,0 @@
-/home/minjea/sketch_robot_ws/build/sketch_control/launch/moveit_with_rsp.launch.py

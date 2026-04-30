@@ -1,1 +1,0 @@
-/home/minjea/sketch_robot_ws/build/sketch_control/launch/sketch_control.launch.py

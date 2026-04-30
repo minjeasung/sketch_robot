@@ -6,11 +6,13 @@ MoveIt 으로 계획만 한 뒤 궤적 포인트를 /joint_command 로 직접 �
 붓 TCP (tool0 + 15cm Z) 오프셋 + 3D 스플라인 경로 스무딩.
 """
 import copy
+import math
 import threading
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
+from rclpy.action import ActionClient
 from scipy.interpolate import CubicSpline
 from tf2_ros import Buffer, TransformListener
 
@@ -18,12 +20,13 @@ from geometry_msgs.msg import PoseArray, Pose, PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 
-from moveit_msgs.srv import GetCartesianPath, GetPositionIK
+from moveit_msgs.srv import GetCartesianPath, GetPositionIK, ApplyPlanningScene
+from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (
     PositionIKRequest, RobotState,
     CollisionObject, AttachedCollisionObject,
     PlanningScene, PlanningSceneWorld,
-    Constraints, OrientationConstraint,
+    Constraints, OrientationConstraint, PositionConstraint, JointConstraint,
 )
 from shape_msgs.msg import SolidPrimitive
 
@@ -37,6 +40,26 @@ EE_LINK = "tool0"
 BASE_FRAME = "base_link"
 
 BRUSH_PRESS_DEPTH = 0.003  # 3mm 침투 (paint threshold 내)
+
+SAFETY_OFFSET = 0.05   # 5cm 짧은 normal-direction approach
+RETREAT_OFFSET = 0.15  # Stage 4 후퇴점: 표면 normal 방향 15cm
+PLANNER_ID = "RRTConnect"
+ALLOWED_PLANNING_TIME = 5.0
+PLANNING_ATTEMPTS = 5
+
+# Stage 5 — READY_POSE 복귀
+RETURN_TO_READY = True   # False 면 Stage 5 비활성 (디버깅용)
+
+# isaac_sim_ur10.py 의 READY_POSE = [-0.08, -1.6, 1.76, -1.76, -1.9, 3.14]
+# joint 순서: shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3
+READY_POSE_JOINTS = {
+    "shoulder_pan_joint":   -0.08,
+    "shoulder_lift_joint":  -1.6,
+    "elbow_joint":           1.76,
+    "wrist_1_joint":        -1.76,
+    "wrist_2_joint":        -1.9,
+    "wrist_3_joint":         3.14,
+}
 
 # UR10 이 원점에 있으므로 오프셋 없음
 ROBOT_ORIGIN = (0.0, 0.0, 0.0)
@@ -63,6 +86,19 @@ class MoveItExecutor(Node):
             GetCartesianPath, "/compute_cartesian_path")
         self.ik_client = self.create_client(
             GetPositionIK, "/compute_ik")
+
+        # MoveGroup action client (Stage 1: 자유 경로 planning)
+        self.move_action_client = ActionClient(self, MoveGroup, "/move_action")
+
+        # ApplyPlanningScene service client (실제 MoveIt collision detection 등록)
+        self.apply_scene_client = self.create_client(
+            ApplyPlanningScene, "/apply_planning_scene")
+
+        # 다음 stage 로 넘기는 데 쓰는 상태
+        self._safety_tool0_pose = None
+        self._retreat_tool0_pose = None
+        self._stage3_tool0_wps = None  # Stage 2 끝났을 때 stage 3 가 쓸 waypoints
+        self._stage1_retried = False
 
         self.current_waypoints = []
         self.current_joint_state = None
@@ -162,19 +198,59 @@ class MoveItExecutor(Node):
         if self.executing:
             self.get_logger().warn("이미 실행 중")
             return
-        self.get_logger().info("1단계: 첫 점까지 approach (plan_only)")
-        self.approach_to_first()
+
+        # 첫 Submit 안전성: READY_POSE 가 아니면 사용자에게 경고만.
+        # 자동 복귀는 비동기 chain 이라 Stage 1 시작과 race 됨 — 단순 경고로 처리.
+        if RETURN_TO_READY and not self._is_at_ready_pose():
+            self.get_logger().warn(
+                "현재 자세가 READY_POSE 와 다름. Stage 1 path 가 wall 닿을 수 있음. "
+                "Stage 5 (자동 복귀) 가 다음 Submit 부터 보장.")
+
+        # Stage 2/3 가 쓸 표면 스냅된 tool0 waypoints 미리 계산
+        densified_tip, tool0_wps, target, n = self._compute_snapped_tool0_waypoints()
+        self._stage3_tool0_wps = tool0_wps
+
+        # Stage 1 의 목표: 첫 점 표면 위치 → normal 방향 SAFETY_OFFSET 후퇴
+        fixed_q = ee_quat_for_target(target)
+        first_tip = densified_tip[0]
+        safety_tip = self._offset_along_normal(first_tip, SAFETY_OFFSET)
+        safety_tool0 = self._brush_tip_to_tool0(safety_tip)
+        safety_tool0.orientation.x = float(fixed_q[0])
+        safety_tool0.orientation.y = float(fixed_q[1])
+        safety_tool0.orientation.z = float(fixed_q[2])
+        safety_tool0.orientation.w = float(fixed_q[3])
+        self._safety_tool0_pose = safety_tool0
+
+        # Stage 4 의 목표: 마지막 점 → normal 방향 RETREAT_OFFSET 후퇴
+        last_tip = densified_tip[-1]
+        retreat_tip = self._offset_along_normal(last_tip, RETREAT_OFFSET)
+        retreat_tool0 = self._brush_tip_to_tool0(retreat_tip)
+        retreat_tool0.orientation.x = float(fixed_q[0])
+        retreat_tool0.orientation.y = float(fixed_q[1])
+        retreat_tool0.orientation.z = float(fixed_q[2])
+        retreat_tool0.orientation.w = float(fixed_q[3])
+        self._retreat_tool0_pose = retreat_tool0
+
+        self.get_logger().info("=" * 60)
+        self.get_logger().info("=== STAGE 1: free-space approach (OMPL) ===")
+        self.get_logger().info(
+            f"safety_tool0=({safety_tool0.position.x:.3f},"
+            f"{safety_tool0.position.y:.3f},{safety_tool0.position.z:.3f})")
+        self.executing = True
+        self.stage1_approach_free()
 
     def on_scene_update(self, msg):
+        """모니터링 용. scene_confirmed 는 ApplyPlanningScene 결과로 설정."""
         scene_ids = set(obj.id for obj in msg.world.collision_objects)
         objects_ok = self._enabled_ids.issubset(scene_ids)
         brush_ok = any(
             ao.object.id == "brush"
             for ao in msg.robot_state.attached_collision_objects)
-        if objects_ok and brush_ok and not self.scene_confirmed:
-            self.scene_confirmed = True
+        if objects_ok and brush_ok and not getattr(self, "_monitor_logged", False):
+            self._monitor_logged = True
             self.get_logger().info(
-                f"[OK] PlanningScene 검증: {sorted(self._enabled_ids)} + brush 등록")
+                f"[INFO] /monitored_planning_scene 에 {sorted(self._enabled_ids)} + brush 보임 "
+                "(apply 결과로 confirmed 됨)")
 
     # ---- PlanningScene (물체들 + 붓 AttachedCollisionObject) ------------------
     def publish_scene_periodic(self):
@@ -205,17 +281,28 @@ class MoveItExecutor(Node):
             co.operation = CollisionObject.ADD
             ps.world.collision_objects.append(co)
 
-        # --- 토치 (tool0 에 attached, 단순 cylinder 25cm, radius 2.5cm) ---
+        # --- 토치 (tool0 에 attached, cylinder 25cm, radius 2.5cm) ---
+        # 실제 torch 는 tool0 의 +Y 방향으로 뻗음 (수동 캘리브레이션으로 확정).
+        # SolidPrimitive.CYLINDER 의 기본 axis 는 +Z 이므로 X-축 90도 회전 적용.
         torch_aco = AttachedCollisionObject()
         torch_aco.link_name = EE_LINK  # "tool0"
         torch_aco.object.id = "brush"  # id 는 기존 유지 (scene_confirmed 로직 호환)
         torch_aco.object.header.frame_id = EE_LINK
         torch_prim = SolidPrimitive()
         torch_prim.type = SolidPrimitive.CYLINDER
-        torch_prim.dimensions = [TORCH_LENGTH, 0.025]  # [height, radius]
+        torch_prim.dimensions = [TORCH_LENGTH, 0.025]  # [height=0.25, radius=0.025]
         torch_pose = Pose()
-        torch_pose.position.z = TORCH_LENGTH / 2.0  # 중심 +Z 12.5cm
-        torch_pose.orientation.w = 1.0
+        # 중심 위치를 +Y 12.5cm 로 (cylinder 가 +Y 0 ~ +Y 25cm 차지)
+        torch_pose.position.x = 0.0
+        torch_pose.position.y = TORCH_LENGTH / 2.0  # 중심 +Y 12.5cm
+        torch_pose.position.z = 0.0
+        # X-축 90도 회전: cylinder 의 default +Z axis 를 +Y 로 회전
+        # quaternion = (sin(45°), 0, 0, cos(45°)) ≈ (0.7071, 0, 0, 0.7071)
+        half_angle = math.pi / 4.0
+        torch_pose.orientation.x = math.sin(half_angle)
+        torch_pose.orientation.y = 0.0
+        torch_pose.orientation.z = 0.0
+        torch_pose.orientation.w = math.cos(half_angle)
         torch_aco.object.primitives.append(torch_prim)
         torch_aco.object.primitive_poses.append(torch_pose)
         torch_aco.object.operation = CollisionObject.ADD
@@ -223,23 +310,49 @@ class MoveItExecutor(Node):
         ps.robot_state.attached_collision_objects.append(torch_aco)
         ps.robot_state.is_diff = True
 
+        # publish 도 유지 (RViz 시각화 용)
         self.scene_pub.publish(ps)
+
+        # ApplyPlanningScene service 로 진짜 등록 (MoveIt 의 collision detection 에 반영)
+        if self.apply_scene_client.wait_for_service(timeout_sec=1.0):
+            req = ApplyPlanningScene.Request()
+            req.scene = ps
+            future = self.apply_scene_client.call_async(req)
+            future.add_done_callback(self._apply_scene_done)
+        else:
+            self.get_logger().warn("/apply_planning_scene service 없음")
+
         if not self.scene_initialized:
             self.get_logger().info(
-                "PlanningScene: 물체 + 토치(attached to tool0, 25cm) 퍼블리시")
+                "PlanningScene: 물체 + 토치 publish + apply 시도")
             self.scene_initialized = True
 
+    def _apply_scene_done(self, future):
+        """ApplyPlanningScene service 응답 처리. 성공 시 scene_confirmed."""
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().warn(f"ApplyPlanningScene 실패: {e}")
+            return
+        if resp.success and not self.scene_confirmed:
+            self.scene_confirmed = True
+            self.get_logger().info(
+                "[OK] PlanningScene apply 성공 (MoveIt 에 wall+brush 등록됨)")
+        elif not resp.success:
+            self.get_logger().warn("ApplyPlanningScene 실패 (success=False)")
+
     # ---- 궤적 직접 실행 (joint_command 퍼블리시) --------------------------------
-    def execute_trajectory_direct(self, traj):
-        """궤적 포인트를 시간에 맞춰 /joint_command 로 퍼블리시."""
+    def execute_trajectory_direct(self, traj, on_complete=None):
+        """궤적 포인트를 시간에 맞춰 /joint_command 로 퍼블리시.
+        on_complete: 실행 끝나고 호출할 callback. 다음 stage 트리거용."""
         points = traj.joint_trajectory.points
         names = list(traj.joint_trajectory.joint_names)
         if not points:
             self.get_logger().warn("빈 궤적")
-            self.executing = False
+            if on_complete is None:
+                self.executing = False
             return
 
-        self.executing = True
         self.get_logger().info(f"궤적 실행 시작: {len(points)} 포인트")
 
         def _run():
@@ -260,84 +373,283 @@ class MoveItExecutor(Node):
                 self.joint_cmd_pub.publish(cmd)
 
             self.get_logger().info(">>> 궤적 실행 완료")
-            self.executing = False
+            # joint_state 안정화 짧게 대기 (다음 stage 가 current_joint_state 쓰니까)
+            time.sleep(0.5)
+            if on_complete is not None:
+                on_complete()
+            else:
+                self.executing = False
 
         threading.Thread(target=_run, daemon=True).start()
 
-    # ---- Stage 1: approach (IK + 직접 이동) -----------------------------------
-    def approach_to_first(self):
-        """첫 웨이포인트에서 x-5cm 위치로 IK 계산 후 직접 joint command 이동."""
-        if not self.ik_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error("/compute_ik 서비스 없음")
+    # ---- helpers for 4-stage approach ---------------------------------------
+    def _offset_along_normal(self, pose, distance):
+        """pose 를 active target 의 표면 normal 방향으로 distance 만큼 후퇴."""
+        target = get_target(self.cfg, self.active_target_name)
+        _, n = get_surface_plane(target)
+        out = copy.deepcopy(pose)
+        out.position.x += distance * float(n[0])
+        out.position.y += distance * float(n[1])
+        out.position.z += distance * float(n[2])
+        return out
+
+    def _make_pose_constraints(self, pose, link_name=EE_LINK, frame=BASE_FRAME):
+        """Pose 를 MoveGroup goal 의 Constraints 로 변환."""
+        c = Constraints()
+
+        pc = PositionConstraint()
+        pc.header.frame_id = frame
+        pc.link_name = link_name
+        pc.target_point_offset.x = 0.0
+        pc.target_point_offset.y = 0.0
+        pc.target_point_offset.z = 0.0
+        sp = SolidPrimitive()
+        sp.type = SolidPrimitive.SPHERE
+        sp.dimensions = [0.001]  # 1mm tolerance (tight)
+        pc.constraint_region.primitives.append(sp)
+        region_pose = Pose()
+        region_pose.position = pose.position
+        region_pose.orientation.w = 1.0
+        pc.constraint_region.primitive_poses.append(region_pose)
+        pc.weight = 1.0
+        c.position_constraints.append(pc)
+
+        oc = OrientationConstraint()
+        oc.header.frame_id = frame
+        oc.link_name = link_name
+        oc.orientation = pose.orientation
+        oc.absolute_x_axis_tolerance = 0.02
+        oc.absolute_y_axis_tolerance = 0.02
+        oc.absolute_z_axis_tolerance = 0.02
+        oc.weight = 1.0
+        c.orientation_constraints.append(oc)
+
+        return c
+
+    def _compute_snapped_tool0_waypoints(self):
+        """current_waypoints 를 표면 스냅 + densify + tool0 변환한 결과 반환.
+        Stage 2/3 양쪽이 같은 변환 결과를 써야 일관됨.
+        Returns: (snapped_tip_wps, tool0_wps, target, n)
+        """
+        target = get_target(self.cfg, self.active_target_name)
+        sp, n = get_surface_plane(target)
+        fixed_q = ee_quat_for_target(target)
+        snapped = []
+        for wp in self.current_waypoints:
+            p = np.array([wp.position.x, wp.position.y, wp.position.z])
+            delta = float(np.dot(p - sp, n))
+            projected = p - delta * n - n * BRUSH_PRESS_DEPTH
+            sw = copy.deepcopy(wp)
+            sw.position.x = float(projected[0])
+            sw.position.y = float(projected[1])
+            sw.position.z = float(projected[2])
+            sw.orientation.x = float(fixed_q[0])
+            sw.orientation.y = float(fixed_q[1])
+            sw.orientation.z = float(fixed_q[2])
+            sw.orientation.w = float(fixed_q[3])
+            snapped.append(sw)
+        densified = self._densify_waypoints(snapped, spacing_m=0.005)
+        tool0_wps = [self._brush_tip_to_tool0(wp) for wp in densified]
+        return densified, tool0_wps, target, n
+
+    # ---- Stage 1: free-space approach via MoveGroup action -------------------
+    def stage1_approach_free(self):
+        # PlanningScene 검증 대기 (attached torch + wall 등록 확인)
+        import time
+        wait_start = time.time()
+        while not self.scene_confirmed and (time.time() - wait_start) < 5.0:
+            self.get_logger().info("PlanningScene 검증 대기 중...")
+            time.sleep(0.5)
+        if not self.scene_confirmed:
+            self.get_logger().warn(
+                "PlanningScene 미검증 (5초 타임아웃). 충돌 회피 약할 수 있음.")
+        else:
+            self.get_logger().info("PlanningScene 검증 OK")
+
+        if not self.move_action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error("MoveGroup action server 없음 (/move_action)")
+            self.executing = False
             return
 
-        first = self.current_waypoints[0]
-        approach = copy.deepcopy(first)
-        # 표면에서 normal 방향으로 5cm 뒤로
-        _, n = get_surface_plane(get_target(self.cfg, self.active_target_name))
-        approach.position.x += 0.05 * float(n[0])
-        approach.position.y += 0.05 * float(n[1])
-        approach.position.z += 0.05 * float(n[2])
-        # brush_tip → tool0 오프셋
-        approach = self._brush_tip_to_tool0(approach)
+        goal = MoveGroup.Goal()
+        goal.request.group_name = PLANNING_GROUP
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        goal.request.start_state = rs
+        goal.request.goal_constraints = [
+            self._make_pose_constraints(self._safety_tool0_pose)
+        ]
+        goal.request.planner_id = PLANNER_ID
+        goal.request.allowed_planning_time = ALLOWED_PLANNING_TIME
+        goal.request.num_planning_attempts = PLANNING_ATTEMPTS
+        goal.request.max_velocity_scaling_factor = 0.3
+        goal.request.max_acceleration_scaling_factor = 0.3
 
-        req = GetPositionIK.Request()
-        req.ik_request.group_name = PLANNING_GROUP
-        ps = PoseStamped()
-        ps.header.frame_id = BASE_FRAME
-        ps.pose = approach
-        req.ik_request.pose_stamped = ps
+        goal.planning_options.plan_only = True
+        goal.planning_options.planning_scene_diff.is_diff = True
 
-        if self.current_joint_state:
-            rs = RobotState()
-            rs.joint_state = self.current_joint_state
-            req.ik_request.robot_state = rs
+        future = self.move_action_client.send_goal_async(goal)
+        future.add_done_callback(self._stage1_goal_response)
 
-        fut = self.ik_client.call_async(req)
-        fut.add_done_callback(self._approach_ik_done)
+    def _retry_stage1_with_default_planner(self):
+        """planner_id 를 비워서 MoveGroup 의 기본 planner 로 재시도."""
+        goal = MoveGroup.Goal()
+        goal.request.group_name = PLANNING_GROUP
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        goal.request.start_state = rs
+        goal.request.goal_constraints = [
+            self._make_pose_constraints(self._safety_tool0_pose)
+        ]
+        # planner_id 비움 — 서버 기본 사용
+        goal.request.planner_id = ""
+        goal.request.allowed_planning_time = ALLOWED_PLANNING_TIME
+        goal.request.num_planning_attempts = PLANNING_ATTEMPTS
+        goal.request.max_velocity_scaling_factor = 0.3
+        goal.request.max_acceleration_scaling_factor = 0.3
+        goal.planning_options.plan_only = True
+        goal.planning_options.planning_scene_diff.is_diff = True
 
-    def _approach_ik_done(self, future):
+        future = self.move_action_client.send_goal_async(goal)
+        future.add_done_callback(self._stage1_goal_response)
+
+    def _stage1_goal_response(self, future):
+        try:
+            handle = future.result()
+        except Exception as e:
+            self.get_logger().error(f"STAGE 1 send_goal 실패: {e}")
+            self.executing = False
+            return
+        if not handle.accepted:
+            self.get_logger().error("STAGE 1 goal rejected")
+            self.executing = False
+            return
+        self.get_logger().info("STAGE 1 goal accepted, planning...")
+        handle.get_result_async().add_done_callback(self._stage1_result)
+
+    def _stage1_result(self, future):
+        try:
+            result = future.result().result
+        except Exception as e:
+            self.get_logger().error(f"STAGE 1 result 실패: {e}")
+            self.executing = False
+            return
+        if result.error_code.val != 1:  # MoveItErrorCodes.SUCCESS = 1
+            self.get_logger().error(
+                f"STAGE 1 planning 실패 error_code={result.error_code.val}")
+            # planner_id mismatch 가능성 — 빈 planner_id 로 한 번 재시도
+            if not getattr(self, "_stage1_retried", False):
+                self._stage1_retried = True
+                self.get_logger().warn(
+                    f"planner_id='{PLANNER_ID}' 실패 — 서버 기본 planner 로 재시도")
+                self._retry_stage1_with_default_planner()
+                return
+            self._stage1_retried = False
+            self.executing = False
+            return
+
+        # 성공 시 retry flag 리셋
+        self._stage1_retried = False
+
+        traj = result.planned_trajectory
+        n_points = len(traj.joint_trajectory.points)
+        self.get_logger().info(f"STAGE 1 planning OK: {n_points} 포인트")
+
+        # 0.3x 스케일링 (cartesian 과 동일)
+        traj = self._rescale_trajectory(traj, scale=0.3)
+        self.execute_trajectory_direct(
+            traj, on_complete=self.stage2_approach_linear)
+
+    # ---- Stage 2: linear approach to first surface point (cartesian) --------
+    def stage2_approach_linear(self):
+        self.get_logger().info("=== STAGE 2: linear approach (cartesian) ===")
+        if not self.cartesian_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error("/compute_cartesian_path 서비스 없음 (Stage 2)")
+            self.executing = False
+            return
+
+        target = get_target(self.cfg, self.active_target_name)
+        _, n = get_surface_plane(target)
+
+        req = GetCartesianPath.Request()
+        req.header.frame_id = BASE_FRAME
+        req.header.stamp = self.get_clock().now().to_msg()
+        req.group_name = PLANNING_GROUP
+        req.link_name = EE_LINK
+
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        req.start_state = rs
+
+        # 목표: 표면 첫 점 (tool0 좌표)
+        req.waypoints = [self._stage3_tool0_wps[0]]
+        req.max_step = 0.005
+        req.jump_threshold = 5.0
+        req.avoid_collisions = True
+        req.max_velocity_scaling_factor = 0.3
+        req.max_acceleration_scaling_factor = 0.3
+
+        # Orientation constraint (Stage 3 와 동일)
+        ee_q = ee_quat_for_target(target)
+        brush_dir_world = -np.asarray(n, dtype=float)
+        free_axis = int(np.argmax(np.abs(brush_dir_world)))
+        tol = [0.2, 0.2, 0.2]
+        tol[free_axis] = 3.14
+        oc = OrientationConstraint()
+        oc.header.frame_id = "world"
+        oc.link_name = EE_LINK
+        oc.orientation.x = float(ee_q[0])
+        oc.orientation.y = float(ee_q[1])
+        oc.orientation.z = float(ee_q[2])
+        oc.orientation.w = float(ee_q[3])
+        oc.absolute_x_axis_tolerance = tol[0]
+        oc.absolute_y_axis_tolerance = tol[1]
+        oc.absolute_z_axis_tolerance = tol[2]
+        oc.weight = 1.0
+        req.path_constraints = Constraints()
+        req.path_constraints.orientation_constraints.append(oc)
+
+        # 디버그: stage 2 의 시작 → 끝 거리와 방향 검증
+        end_pose = self._stage3_tool0_wps[0]
+        # 현재 tool0 위치는 정확히 모르지만, 직전 stage 1 의 의도된 도착점 (safety_tool0_pose) 로 근사
+        start_pose = self._safety_tool0_pose
+        delta = np.array([
+            end_pose.position.x - start_pose.position.x,
+            end_pose.position.y - start_pose.position.y,
+            end_pose.position.z - start_pose.position.z,
+        ])
+        dist = float(np.linalg.norm(delta))
+        direction = delta / (dist + 1e-9)
+        _, n_target = get_surface_plane(target)
+        align = float(np.dot(direction, -np.asarray(n_target)))  # +1 이 완벽한 normal 진입
+        self.get_logger().info(
+            f"[STAGE 2 DEBUG] dist={dist*100:.1f}cm "
+            f"direction=({direction[0]:+.2f},{direction[1]:+.2f},{direction[2]:+.2f}) "
+            f"normal_align={align:+.3f} (1.0=perfect)")
+
+        future = self.cartesian_client.call_async(req)
+        future.add_done_callback(self._stage2_done)
+
+    def _stage2_done(self, future):
         try:
             resp = future.result()
         except Exception as e:
-            self.get_logger().error(f"IK 서비스 실패: {e}")
-            return
-
-        if resp.error_code.val != 1:
-            self.get_logger().error(f"approach IK 실패 error_code={resp.error_code.val}")
-            return
-
-        target_positions = list(resp.solution.joint_state.position[:6])
-        target_names = list(resp.solution.joint_state.name[:6])
-        self.get_logger().info(f"approach IK 성공 -> 직접 이동")
-
-        # 현재 → 목표를 보간해서 부드럽게 이동 (50 스텝, 2초)
-        self.executing = True
-        def _move():
-            import time
-            import numpy as np
-            if self.current_joint_state is None:
-                self.executing = False
-                return
-            current = list(self.current_joint_state.position[:6])
-            steps = 50
-            for i in range(1, steps + 1):
-                alpha = i / steps
-                interp = [c + alpha * (t - c) for c, t in zip(current, target_positions)]
-                cmd = JointState()
-                cmd.name = target_names
-                cmd.position = interp
-                self.joint_cmd_pub.publish(cmd)
-                time.sleep(2.0 / steps)
-            self.get_logger().info("approach 이동 완료 -> joint_state 안정화 대기")
+            self.get_logger().error(f"STAGE 2 서비스 실패: {e}")
             self.executing = False
-            time.sleep(1.0)  # joint_state 업데이트 대기
-            js = self.current_joint_state
-            if js:
-                self.get_logger().info(
-                    f"현재 관절: {[f'{p:.3f}' for p in js.position[:6]]}")
-            self.plan_cartesian()
-        threading.Thread(target=_move, daemon=True).start()
+            return
+        fraction = resp.fraction
+        self.get_logger().info(f"STAGE 2 cartesian: {fraction*100:.1f}%")
+        if fraction < 0.95:
+            self.get_logger().error(
+                f"STAGE 2 fraction {fraction*100:.0f}% < 95% -> 중단")
+            self.executing = False
+            return
+        traj = self._rescale_trajectory(resp.solution, scale=0.3)
+        self.execute_trajectory_direct(
+            traj, on_complete=self.plan_cartesian)
 
     # ---- torch_tip → tool0 오프셋 변환 ------------------------------------------
     @staticmethod
@@ -513,6 +825,7 @@ class MoveItExecutor(Node):
             resp = future.result()
         except Exception as e:
             self.get_logger().error(f"Cartesian 서비스 실패: {e}")
+            self.executing = False
             return
 
         fraction = resp.fraction
@@ -520,12 +833,193 @@ class MoveItExecutor(Node):
         if fraction < 0.5:
             self.get_logger().error(
                 "50% 미만 -> 스케치를 재생성하거나 타겟을 변경하세요.")
+            self.executing = False
             return
         if fraction < 0.95:
             self.get_logger().warn(f"{fraction*100:.1f}% -> 부분 실행")
 
         traj = self._rescale_trajectory(resp.solution, scale=0.3)
-        self.execute_trajectory_direct(traj)
+        self.execute_trajectory_direct(
+            traj, on_complete=self.stage4_retreat)
+
+    # ---- Stage 4: linear retreat (cartesian) --------------------------------
+    def stage4_retreat(self):
+        self.get_logger().info("=== STAGE 4: linear retreat (cartesian) ===")
+        if not self.cartesian_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error("/compute_cartesian_path 서비스 없음 (Stage 4)")
+            self.executing = False
+            return
+
+        target = get_target(self.cfg, self.active_target_name)
+        _, n = get_surface_plane(target)
+
+        req = GetCartesianPath.Request()
+        req.header.frame_id = BASE_FRAME
+        req.header.stamp = self.get_clock().now().to_msg()
+        req.group_name = PLANNING_GROUP
+        req.link_name = EE_LINK
+
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        req.start_state = rs
+
+        req.waypoints = [self._retreat_tool0_pose]
+        req.max_step = 0.005
+        req.jump_threshold = 5.0
+        req.avoid_collisions = True
+        req.max_velocity_scaling_factor = 0.3
+        req.max_acceleration_scaling_factor = 0.3
+
+        ee_q = ee_quat_for_target(target)
+        brush_dir_world = -np.asarray(n, dtype=float)
+        free_axis = int(np.argmax(np.abs(brush_dir_world)))
+        tol = [0.2, 0.2, 0.2]
+        tol[free_axis] = 3.14
+        oc = OrientationConstraint()
+        oc.header.frame_id = "world"
+        oc.link_name = EE_LINK
+        oc.orientation.x = float(ee_q[0])
+        oc.orientation.y = float(ee_q[1])
+        oc.orientation.z = float(ee_q[2])
+        oc.orientation.w = float(ee_q[3])
+        oc.absolute_x_axis_tolerance = tol[0]
+        oc.absolute_y_axis_tolerance = tol[1]
+        oc.absolute_z_axis_tolerance = tol[2]
+        oc.weight = 1.0
+        req.path_constraints = Constraints()
+        req.path_constraints.orientation_constraints.append(oc)
+
+        future = self.cartesian_client.call_async(req)
+        future.add_done_callback(self._stage4_done)
+
+    def _stage4_done(self, future):
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().error(f"STAGE 4 서비스 실패: {e}")
+            self.executing = False
+            return
+        fraction = resp.fraction
+        self.get_logger().info(f"STAGE 4 cartesian: {fraction*100:.1f}%")
+        if fraction < 0.5:
+            self.get_logger().warn(
+                f"STAGE 4 fraction {fraction*100:.0f}% 낮음 -> 중단 (토치 표면에 남음)")
+            self.executing = False
+            return
+        traj = self._rescale_trajectory(resp.solution, scale=0.3)
+        self.execute_trajectory_direct(traj, on_complete=self._all_stages_done)
+
+    def _all_stages_done(self):
+        self.get_logger().info("=" * 60)
+        self.get_logger().info(">>> Stage 1→2→3→4 완료")
+        if RETURN_TO_READY:
+            self.stage5_return_to_ready()
+        else:
+            self.get_logger().info(">>> 모든 stage 완료 (1→2→3→4)")
+            self.get_logger().info("=" * 60)
+            self.executing = False
+
+    # ---- Stage 5: return to READY_POSE (joint goal via OMPL) ----------------
+    def _is_at_ready_pose(self, tol_rad=0.05):
+        """현재 joint state 가 READY_POSE 와 가까운지 (joint 당 tol_rad 이내)."""
+        if self.current_joint_state is None:
+            return False
+        cs = dict(zip(
+            self.current_joint_state.name,
+            self.current_joint_state.position
+        ))
+        for jn, target in READY_POSE_JOINTS.items():
+            if jn not in cs:
+                return False
+            if abs(cs[jn] - target) > tol_rad:
+                return False
+        return True
+
+    def stage5_return_to_ready(self):
+        self.get_logger().info(
+            f"=== STAGE 5: return to READY_POSE (joint goal, {PLANNER_ID}) ===")
+        if not self.move_action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().warn(
+                "MoveGroup action server 없음 — Stage 5 skip (READY 미복귀)")
+            self._stage5_finalize(success=False)
+            return
+
+        goal = MoveGroup.Goal()
+        goal.request.group_name = PLANNING_GROUP
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        goal.request.start_state = rs
+
+        # Joint goal constraints
+        constraints = Constraints()
+        for jn, target in READY_POSE_JOINTS.items():
+            jc = JointConstraint()
+            jc.joint_name = jn
+            jc.position = float(target)
+            jc.tolerance_above = 0.01
+            jc.tolerance_below = 0.01
+            jc.weight = 1.0
+            constraints.joint_constraints.append(jc)
+        goal.request.goal_constraints = [constraints]
+
+        goal.request.planner_id = PLANNER_ID
+        goal.request.allowed_planning_time = ALLOWED_PLANNING_TIME
+        goal.request.num_planning_attempts = PLANNING_ATTEMPTS
+        # Stage 5 는 빈 공간 이동 — Stage 1 보다 빠르게
+        goal.request.max_velocity_scaling_factor = 0.5
+        goal.request.max_acceleration_scaling_factor = 0.5
+
+        goal.planning_options.plan_only = True
+        goal.planning_options.planning_scene_diff.is_diff = True
+
+        future = self.move_action_client.send_goal_async(goal)
+        future.add_done_callback(self._stage5_goal_response)
+
+    def _stage5_goal_response(self, future):
+        try:
+            handle = future.result()
+        except Exception as e:
+            self.get_logger().warn(f"STAGE 5 send_goal 실패: {e}")
+            self._stage5_finalize(success=False)
+            return
+        if not handle.accepted:
+            self.get_logger().warn("STAGE 5 goal rejected")
+            self._stage5_finalize(success=False)
+            return
+        self.get_logger().info("STAGE 5 goal accepted, planning...")
+        handle.get_result_async().add_done_callback(self._stage5_result)
+
+    def _stage5_result(self, future):
+        try:
+            result = future.result().result
+        except Exception as e:
+            self.get_logger().warn(f"STAGE 5 result 실패: {e}")
+            self._stage5_finalize(success=False)
+            return
+        if result.error_code.val != 1:
+            self.get_logger().warn(
+                f"STAGE 5 planning 실패 error_code={result.error_code.val}")
+            self._stage5_finalize(success=False)
+            return
+
+        traj = result.planned_trajectory
+        n_points = len(traj.joint_trajectory.points)
+        self.get_logger().info(f"STAGE 5 planning OK: {n_points} 포인트")
+        traj = self._rescale_trajectory(traj, scale=0.5)
+        self.execute_trajectory_direct(
+            traj, on_complete=lambda: self._stage5_finalize(success=True))
+
+    def _stage5_finalize(self, success):
+        if success:
+            self.get_logger().info("Stage 5 완료: READY_POSE 복귀")
+            self.get_logger().info(">>> 모든 stage 완료 (1→2→3→4→5)")
+        else:
+            self.get_logger().warn(
+                "Stage 5 (READY 복귀) 실패. 다음 Submit 의 시작 위치 부적합 가능.")
+        self.get_logger().info("=" * 60)
+        self.executing = False
 
     def _rescale_trajectory(self, traj, scale=0.3):
         if not traj.joint_trajectory.points:

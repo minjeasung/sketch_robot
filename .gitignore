@@ -1,0 +1,41 @@
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+
+# Claude Code local settings
+.claude/
+
+# Backup files
+*.bak
+*.bak_*
+
+# Other logs
+logs/
+
+# Claude Code local settings
+.claude/
+
+# Backup files
+*.bak
+*.bak_*
+
+# Other logs
+logs/

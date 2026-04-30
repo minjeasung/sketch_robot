@@ -1,0 +1,130 @@
+# Sketch Robot 프로젝트 백업/이력
+
+## 환경
+- Linux: Ubuntu 24.04, ROS2 Jazzy, Isaac Sim 5.1, RTX 5060
+- Windows: Unity 6.4 (sketchrobotunity)
+- 통신: ROS-TCP-Connector (147.46.95.52:10000)
+
+## 백업 목록
+
+### Phase 1 stable (2026-04-20)
+경로: ~/sketch_robot_ws_BACKUP_phase1-stable_20260420
+내용:
+- Isaac Sim UR10 + 벽 + 토치 EoAT
+- moveit_executor (2-stage: IK approach + cartesian)
+- weld_visualizer (TF 기반 비드)
+- Phase 1 sketch_ui (Python tkinter)
+
+### Phase 2 complete (2026-04-27)
+경로: ~/sketch_robot_ws_BACKUP_phase2-complete_20260427
+Unity 백업: C:\Users\min67\sketchrobotunity_BACKUP_phase2-complete_20260427
+내용:
+- Phase 1 의 모든 것
+- Unity SketchManager.cs (클릭→3D, ROS 발행)
+- launch 모듈화: core / phase1_python / phase2_unity
+- EE orientation 하드코딩: (0.726, 0.668, -0.111, 0.122)
+
+알려진 한계:
+- approach 단계 충돌 회피 약함 (Phase 3 에서 개선)
+- ros_tcp_endpoint 메모리 누수 (주기적 재시작 필요)
+
+## 핵심 상수
+READY_POSE = [-0.08, -1.6, 1.76, -1.76, -1.9, 3.14]
+FIXED_TOOL0_QUAT = (0.726, 0.668, -0.111, 0.122)
+TORCH_LENGTH = 0.25 m
+WALL: position (1.05, 0, 0.2), size (0.1, 1.5, 0.4)
+CAMERA_EYE = (-1.1, -1.5, 0.8)
+CAMERA_TARGET = (1.0, 0, 0.2)
+CAM_W, CAM_H = 320, 240
+
+## 복원 절차
+1. 백업 폴더 → ~/sketch_robot_ws 로 복사
+2. cd ~/sketch_robot_ws
+3. colcon build --packages-select sketch_control --symlink-install
+4. source install/setup.bash
+5. 사용:
+   - Phase 1 (Python GUI): ros2 launch sketch_control phase1_python.launch.py
+   - Phase 2 (Unity GUI):  ros2 launch sketch_control phase2_unity.launch.py
+
+## prompts/ 폴더 (2026-04-27 추가)
+경로: ~/sketch_robot_ws/prompts/
+용도: claude.ai 에서 설계한 긴 prompt 들의 .md 보관소
+컨벤션: YYYY-MM-DD_phaseN_<task>.md
+README: prompts/README.md 참조
+
+## Phase 3 진행 중 백업 (2026-04-27)
+경로: ~/sketch_robot_ws_BACKUP_phase3-stuck_20260427
+
+### Phase 3 작업 요약
+- moveit_executor.py 4-stage 파이프라인 (OMPL/cartesian) 구조 완성
+- 안전성 보강 (scene_confirmed wait, planner_id retry, executing flag fix)
+- OMPL planner 등록 (시스템 ompl_planning.yaml 수정, sudo)
+- attached torch collision shape axis 수정 (+Z → +Y)
+- ApplyPlanningScene service 호출 추가 (publish 만으로는 불충분)
+
+### 작동하는 시나리오 (단일 점)
+- PLANNER_ID = "PTP" (Pilz) 로 단일 점 작동 OK
+- 단, 두 번째 Submit (retreat 위치 → 새 안전점) 에서 wall 살짝 닿음
+
+### 미해결 핵심 이슈
+- /apply_planning_scene service 호출 시 success=True 응답
+- 하지만 /get_planning_scene 으로 확인하면 world.collision_objects=[] (wall 미등록)
+- frame_id 'base_link', 'world', 'World' 모두 시도했지만 동일 증상
+- TF 에서 'world' 가 invalid frame ID 라는 경고 (그런데 World→world static transform 은 있음)
+- ROS2 MoveIt (Jazzy) 의 frame/scene 설정 깊은 이슈 추정
+
+### 다음 세션 시작점
+- 백업: sketch_robot_ws_BACKUP_phase3-stuck_20260427
+- prompts/ 폴더에 모든 패치 .md 보관됨
+- 진단 명령들 (service call 등) 대화 이력에 있음
+- 다음 접근 후보:
+  1. MoveIt frame 이슈 깊이 진단 (URDF root, planning_frame param)
+  2. Workaround: Stage 1 도 cartesian path (OMPL 안 씀)
+  3. Workaround: READY_POSE 거치는 다단계 PTP
+
+### 현재 PLANNER_ID, SAFETY_OFFSET 상태
+- 패치 후 마지막 적용 값 확인 필요 (코드에 PTP 인지 RRTConnect 인지)
+
+### Phase 3 — 결론
+
+✓ 4-stage pipeline (OMPL Stage 1 + cartesian Stage 2/3/4) 작동
+✓ Stage 5 (READY_POSE 복귀) 추가 작동
+✓ OMPL planner config 활성화 (시스템 yaml: bak_phase3 백업 존재)
+✓ 1차 Submit: 완전 정상
+
+✗ 2차 이상 Submit 의 Stage 1 에서 토치가 wall 살짝 통과
+✗ 원인: PlanningScene 에 wall 미등록
+   - ApplyPlanningScene service 호출 → success=True 응답
+   - 그러나 GetPlanningScene 결과 world.collision_objects=[]
+   - frame_id 시도: base_link, world, World — 모두 동일 증상
+   - TF tree 진단: world/World 와 base_link 간 TF 끊김 (Isaac Sim 의 World ↔ UR chain root 단절)
+   - ROS2 Jazzy + UR + Isaac Sim + ur_moveit_config 의 누적 셋업 이슈로 추정
+
+→ 시뮬에서 wall 등록 디버깅 보류. 실 로봇 셋업 시 재검토.
+
+## 2026-04-27 — 이번 세션 종료, Phase 4 plan 결정
+
+### 결정
+- 시뮬 (Isaac Sim) 의 wall 등록 디버깅 보류
+- 실로봇 다이렉트 진행
+- 단, 로봇이 UR10 → RB10-1300 (Rainbow Robotics) 으로 바뀜
+  - URDF, MoveIt 셋업, READY_POSE, EE quat 모두 다시 해야 함
+- Depth 카메라: ZED 2 / 2i 사용
+
+### 알려진 사실
+- Rainbow Robotics RB10-1300, ROS2 driver 사용 중
+- 시뮬 코드의 moveit_executor 4-stage 구조 자체는 재사용 가능
+- targets.py / weld_visualizer / Unity 측 코드는 변경 작음
+- isaac_sim_ur10.py 는 사실상 무용 (실로봇이라 시뮬 안 씀)
+
+### 다음 세션 사전 정보 수집 필요
+- RB10 driver 패키지 이름, URDF 위치
+- RB10 spec (reach, payload, joint limits)
+- ZED 모델 + 마운팅 계획 (eye-in-hand vs eye-to-hand)
+- 작업 환경 (작업물 종류, 안전 셋업)
+- RB10 통신 (IP, 네트워크)
+
+### 다음 세션 plan 후보
+1. RB10 driver + 기존 코드 포팅 먼저
+2. ZED 인식 알고리즘 먼저 (mock 좌표계)
+3. 둘 동시 (병렬 트랙)
