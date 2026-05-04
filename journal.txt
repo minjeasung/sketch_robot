@@ -128,3 +128,37 @@ README: prompts/README.md 참조
 1. RB10 driver + 기존 코드 포팅 먼저
 2. ZED 인식 알고리즘 먼저 (mock 좌표계)
 3. 둘 동시 (병렬 트랙)
+## 2026-04-29 — Phase 4 Session 1: RB10 driver up on fake_hardware
+
+새 컴(snucem, U24.04+Jazzy)에서 시작. 옛 ws 코드 안 들고 옴 (의도적).
+
+### 한 일
+- rbpodo C++ lib v0.16.10 설치 (/usr/local)
+- rbpodo_ros2 5 packages clone+build (Jazzy 의존성으로 패키지명 humble→jazzy)
+- 빌드 1 warn (on_init deprecated, 무해)
+- moveit.launch.py + use_fake_hardware:=true 로 RViz/MoveIt 정상 표시 확인
+- 로봇은 끈 채로 정보 추출만
+
+### RB10 정보 (UR10에서 변경되는 핵심)
+- model_id: rb10_1300e_u (E-version, U mounting)
+- PLANNING_GROUP: "mainpulation"  ← SRDF 오타. 그대로 써야 함
+- BASE_FRAME: "link0" (was base_link). world→link0 fixed_joint
+- EE_LINK: "tcp" (was tool0)
+- robot URDF name: "rb"
+- JOINT_NAMES (운동학순): base, shoulder, elbow, wrist1, wrist2, wrist3
+- /joint_states 발행순(알파벳): base, elbow, shoulder, wrist1, wrist2, wrist3 ← swap 주의
+- Controller: joint_trajectory_controller (FollowJointTrajectory) + joint_state_broadcaster
+- Update rate: 30Hz
+- SRDF에 group_state(named pose) 없음 → READY_POSE 직접 정의 필요
+- joint limits 다 ±3.14/3.14/10 placeholder ← 실로봇 단계에서 데이터시트 확인 필요
+
+### 다음 세션
+A: 위 비교표로 깨끗한 포팅 prompt → Claude Code에 던져 moveit_executor.py 변환
+   (READY_POSE_JOINTS, FIXED_TOOL0_QUAT는 TODO 마킹)
+B: 실로봇 첫 연결 (E-stop·EoAT 분리·1.3m 클리어 후 use_fake_hardware:=false)
+C: teach pendant로 안전 자세 → /joint_states 읽어서 READY_POSE 실측
+D: (보류) joint limits 실값
+E: (병렬 트랙) ZED 드라이버만 띄워보기
+
+### 산출 파일
+- output/phase4_session1_rb10_driver_setup.md  (전체 정리)
