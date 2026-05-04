@@ -1,19 +1,27 @@
 """
-MoveIt Executor - Cartesian Path 계획 + 직접 Joint Command 실행 (벽에 쓰기)
+MoveIt Executor - 4-stage 용접 모션 (Plan + FollowJointTrajectory 실행)
 
-Isaac Sim 에는 FollowJointTrajectory 액션 서버가 없으므로,
-MoveIt 으로 계획만 한 뒤 궤적 포인트를 /joint_command 로 직접 퍼블리시.
-붓 TCP (tool0 + 15cm Z) 오프셋 + 3D 스플라인 경로 스무딩.
+대상 로봇: Rainbow Robotics RB10-1300 (rb10_1300e_u, rbpodo_ros2 driver)
+EE link: tcp / Base frame: link0 / Planning group: mainpulation (SRDF 오타)
+
+4-stage 파이프라인:
+  Stage 1: 자유 plan (현재 자세 → safety pose)  [OMPL via /move_action]
+  Stage 2: cartesian (safety → 표면 첫 점)        [/compute_cartesian_path]
+  Stage 3: cartesian path (표면 위 스케치 추종)
+  Stage 4: cartesian (표면 끝 → retreat pose)
+  Stage 5: 자유 plan (retreat → READY_POSE)
+
+토치(EoAT)는 tcp 의 TORCH_MOUNT_AXIS 방향으로 뻗음. 마운팅 변경 시 그 상수만 갱신.
 """
 import copy
 import math
-import threading
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.action import ActionClient
 from scipy.interpolate import CubicSpline
+from scipy.spatial.transform import Rotation as R
 from tf2_ros import Buffer, TransformListener
 
 from geometry_msgs.msg import PoseArray, Pose, PoseStamped
@@ -29,15 +37,17 @@ from moveit_msgs.msg import (
     Constraints, OrientationConstraint, PositionConstraint, JointConstraint,
 )
 from shape_msgs.msg import SolidPrimitive
+from control_msgs.action import FollowJointTrajectory
 
 from sketch_control.targets import (
     load_objects_config, get_surface_plane, get_target, ee_quat_for_target,
 )
 
 
-PLANNING_GROUP = "ur_manipulator"
-EE_LINK = "tool0"
-BASE_FRAME = "base_link"
+# SRDF 의 그룹명이 "mainpulation" 으로 오타. 그대로 유지 (RB10 공식 SRDF 기준).
+PLANNING_GROUP = "mainpulation"
+EE_LINK = "tcp"
+BASE_FRAME = "link0"
 
 BRUSH_PRESS_DEPTH = 0.003  # 3mm 침투 (paint threshold 내)
 
@@ -50,24 +60,63 @@ PLANNING_ATTEMPTS = 5
 # Stage 5 — READY_POSE 복귀
 RETURN_TO_READY = True   # False 면 Stage 5 비활성 (디버깅용)
 
-# isaac_sim_ur10.py 의 READY_POSE = [-0.08, -1.6, 1.76, -1.76, -1.9, 3.14]
-# joint 순서: shoulder_pan, shoulder_lift, elbow, wrist_1, wrist_2, wrist_3
+# RB10 joint 운동학 순서 (URDF 기준).
+# 주의: /joint_states 토픽은 알파벳 순으로 발행됨 (base, elbow, shoulder, wrist1, wrist2, wrist3) —
+# 이 dict 는 이름 매핑이라 순서 무관, 안전.
+# 각 값은 RB10 실로봇에서 teach pendant 로 안전한 자세 만든 후 /joint_states 읽어 실측해야 함.
 READY_POSE_JOINTS = {
-    "shoulder_pan_joint":   -0.08,
-    "shoulder_lift_joint":  -1.6,
-    "elbow_joint":           1.76,
-    "wrist_1_joint":        -1.76,
-    "wrist_2_joint":        -1.9,
-    "wrist_3_joint":         3.14,
+    "base":     0.0,  # TODO: RB10 실측 필요
+    "shoulder": 0.0,  # TODO: RB10 실측 필요
+    "elbow":    0.0,  # TODO: RB10 실측 필요
+    "wrist1":   0.0,  # TODO: RB10 실측 필요
+    "wrist2":   0.0,  # TODO: RB10 실측 필요
+    "wrist3":   0.0,  # TODO: RB10 실측 필요
 }
 
-# UR10 이 원점에 있으므로 오프셋 없음
+# RB10 link0 가 world 원점에 fixed_joint 로 박혀있음. 작업대 위에 따로 옮기면 변경 필요.
 ROBOT_ORIGIN = (0.0, 0.0, 0.0)
 
-# 토치 길이 (tool0 → torch_tip)
+# 토치 길이 (tcp → torch_tip)
 TORCH_LENGTH = 0.25
 # 역호환 alias (내부 함수용)
 BRUSH_LENGTH = TORCH_LENGTH
+
+# 토치가 EE link (tcp) 의 로컬 어느 축으로 뻗는지.
+# 값: "+x", "-x", "+y", "-y", "+z", "-z"
+# 기본 +y 는 UR10 시뮬 시절 가정. RB10 실로봇 마운팅 후 실측해서 변경.
+TORCH_MOUNT_AXIS = "+y"  # TODO: RB10 + 새 EoAT 마운팅 후 실측 필요
+
+
+def _torch_attach_quat(axis):
+    """SolidPrimitive.CYLINDER (default +z) 를 axis 방향으로 회전시키는 quaternion (x,y,z,w).
+    scipy 의 align_vectors 로 동적 계산하여 부호 실수 방지."""
+    target = {"+x": [1, 0, 0], "-x": [-1, 0, 0],
+              "+y": [0, 1, 0], "-y": [0, -1, 0],
+              "+z": [0, 0, 1], "-z": [0, 0, -1]}[axis]
+    src = np.array([0.0, 0.0, 1.0])
+    tgt = np.array(target, dtype=float)
+    if np.allclose(src, tgt):
+        return (0.0, 0.0, 0.0, 1.0)
+    if np.allclose(src, -tgt):
+        # 180도 뒤집기 — 회전축은 src 와 직교한 임의 축. X 선택.
+        return (1.0, 0.0, 0.0, 0.0)
+    rot, _ = R.align_vectors(tgt[None, :], src[None, :])
+    q = rot.as_quat()  # [x, y, z, w]
+    return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+
+
+def _torch_attach_offset(axis):
+    """cylinder 중심 위치 (tcp 기준), TORCH_LENGTH/2 만큼 axis 방향."""
+    sign = -1.0 if axis.startswith("-") else 1.0
+    a = axis[1]
+    half = TORCH_LENGTH / 2.0 * sign
+    if a == "x":
+        return (half, 0.0, 0.0)
+    if a == "y":
+        return (0.0, half, 0.0)
+    if a == "z":
+        return (0.0, 0.0, half)
+    raise ValueError(f"unknown axis: {axis}")
 
 
 class MoveItExecutor(Node):
@@ -79,7 +128,6 @@ class MoveItExecutor(Node):
         self.create_subscription(Bool, "/sketch_execute", self.on_execute, 10)
         self.create_subscription(JointState, "/joint_states", self.on_joint_state, 10)
         self.scene_pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
-        self.joint_cmd_pub = self.create_publisher(JointState, "/joint_command", 10)
 
         # MoveIt endpoints (계획만 사용)
         self.cartesian_client = self.create_client(
@@ -94,10 +142,17 @@ class MoveItExecutor(Node):
         self.apply_scene_client = self.create_client(
             ApplyPlanningScene, "/apply_planning_scene")
 
+        # FollowJointTrajectory action client (RB10 driver 의 joint_trajectory_controller)
+        self.traj_action_client = ActionClient(
+            self,
+            FollowJointTrajectory,
+            "/joint_trajectory_controller/follow_joint_trajectory",
+        )
+
         # 다음 stage 로 넘기는 데 쓰는 상태
-        self._safety_tool0_pose = None
-        self._retreat_tool0_pose = None
-        self._stage3_tool0_wps = None  # Stage 2 끝났을 때 stage 3 가 쓸 waypoints
+        self._safety_tcp_pose = None
+        self._retreat_tcp_pose = None
+        self._stage3_tcp_wps = None  # Stage 2 끝났을 때 stage 3 가 쓸 waypoints
         self._stage1_retried = False
 
         self.current_waypoints = []
@@ -120,25 +175,26 @@ class MoveItExecutor(Node):
 
         self.create_timer(1.0, self.publish_scene_periodic)
 
-        # ---- 진단: 현재 tool0 TF 를 3초마다 출력 (수동 캘리브레이션 용) ----
+        # ---- 진단: 현재 tcp TF 를 3초마다 출력 (수동 캘리브레이션 용) ----
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.create_timer(3.0, self._log_current_tool0)
+        self.create_timer(3.0, self._log_current_tcp)
 
-        self.get_logger().info("MoveIt Executor 노드 시작 (plan + direct joint command)")
+        self.get_logger().info(
+            "MoveIt Executor 노드 시작 (plan + FollowJointTrajectory action)")
 
-    def _log_current_tool0(self):
-        """world → tool0 TF 를 주기적으로 로그. 수동 캘리브레이션 시 사용."""
+    def _log_current_tcp(self):
+        """world → tcp TF 를 주기적으로 로그. 수동 캘리브레이션 시 사용."""
         try:
             tf = self.tf_buffer.lookup_transform(
-                "world", "tool0", rclpy.time.Time(),
+                "world", EE_LINK, rclpy.time.Time(),
                 timeout=Duration(seconds=0.3),
             )
         except Exception:
             # world 프레임 없으면 World 대문자 시도
             try:
                 tf = self.tf_buffer.lookup_transform(
-                    "World", "tool0", rclpy.time.Time(),
+                    "World", EE_LINK, rclpy.time.Time(),
                     timeout=Duration(seconds=0.3),
                 )
             except Exception:
@@ -157,22 +213,22 @@ class MoveItExecutor(Node):
                    2 * (y * z - x * w),
                    1 - 2 * (x * x + y * y))
         self.get_logger().info(
-            f"[TOOL0_NOW] pos=({p.x:+.3f},{p.y:+.3f},{p.z:+.3f}) "
+            f"[TCP_NOW] pos=({p.x:+.3f},{p.y:+.3f},{p.z:+.3f}) "
             f"quat=({q.x:+.3f},{q.y:+.3f},{q.z:+.3f},{q.w:+.3f})"
         )
         self.get_logger().info(
-            f"           local_X_in_world=({local_x[0]:+.2f},{local_x[1]:+.2f},{local_x[2]:+.2f})"
+            f"          local_X_in_world=({local_x[0]:+.2f},{local_x[1]:+.2f},{local_x[2]:+.2f})"
         )
         self.get_logger().info(
-            f"           local_Y_in_world=({local_y[0]:+.2f},{local_y[1]:+.2f},{local_y[2]:+.2f})"
+            f"          local_Y_in_world=({local_y[0]:+.2f},{local_y[1]:+.2f},{local_y[2]:+.2f})"
         )
         self.get_logger().info(
-            f"           local_Z_in_world=({local_z[0]:+.2f},{local_z[1]:+.2f},{local_z[2]:+.2f})"
+            f"          local_Z_in_world=({local_z[0]:+.2f},{local_z[1]:+.2f},{local_z[2]:+.2f})"
         )
 
     # ---- callbacks ----------------------------------------------------------
     def on_waypoints(self, msg: PoseArray):
-        # world 프레임 웨이포인트를 base_link 프레임으로 변환
+        # world 프레임 웨이포인트를 link0 프레임으로 변환
         self.current_waypoints = []
         for p in msg.poses:
             bp = copy.deepcopy(p)
@@ -182,7 +238,7 @@ class MoveItExecutor(Node):
             self.current_waypoints.append(bp)
         self.get_logger().info(
             f"{len(self.current_waypoints)}개 웨이포인트 수신 "
-            f"(base_link 변환: 첫 점 x={self.current_waypoints[0].position.x:.2f} "
+            f"(link0 변환: 첫 점 x={self.current_waypoints[0].position.x:.2f} "
             f"y={self.current_waypoints[0].position.y:.2f} z={self.current_waypoints[0].position.z:.2f})")
 
     def on_joint_state(self, msg: JointState):
@@ -206,36 +262,36 @@ class MoveItExecutor(Node):
                 "현재 자세가 READY_POSE 와 다름. Stage 1 path 가 wall 닿을 수 있음. "
                 "Stage 5 (자동 복귀) 가 다음 Submit 부터 보장.")
 
-        # Stage 2/3 가 쓸 표면 스냅된 tool0 waypoints 미리 계산
-        densified_tip, tool0_wps, target, n = self._compute_snapped_tool0_waypoints()
-        self._stage3_tool0_wps = tool0_wps
+        # Stage 2/3 가 쓸 표면 스냅된 tcp waypoints 미리 계산
+        densified_tip, tcp_wps, target, n = self._compute_snapped_tcp_waypoints()
+        self._stage3_tcp_wps = tcp_wps
 
         # Stage 1 의 목표: 첫 점 표면 위치 → normal 방향 SAFETY_OFFSET 후퇴
         fixed_q = ee_quat_for_target(target)
         first_tip = densified_tip[0]
         safety_tip = self._offset_along_normal(first_tip, SAFETY_OFFSET)
-        safety_tool0 = self._brush_tip_to_tool0(safety_tip)
-        safety_tool0.orientation.x = float(fixed_q[0])
-        safety_tool0.orientation.y = float(fixed_q[1])
-        safety_tool0.orientation.z = float(fixed_q[2])
-        safety_tool0.orientation.w = float(fixed_q[3])
-        self._safety_tool0_pose = safety_tool0
+        safety_tcp = self._brush_tip_to_tcp(safety_tip)
+        safety_tcp.orientation.x = float(fixed_q[0])
+        safety_tcp.orientation.y = float(fixed_q[1])
+        safety_tcp.orientation.z = float(fixed_q[2])
+        safety_tcp.orientation.w = float(fixed_q[3])
+        self._safety_tcp_pose = safety_tcp
 
         # Stage 4 의 목표: 마지막 점 → normal 방향 RETREAT_OFFSET 후퇴
         last_tip = densified_tip[-1]
         retreat_tip = self._offset_along_normal(last_tip, RETREAT_OFFSET)
-        retreat_tool0 = self._brush_tip_to_tool0(retreat_tip)
-        retreat_tool0.orientation.x = float(fixed_q[0])
-        retreat_tool0.orientation.y = float(fixed_q[1])
-        retreat_tool0.orientation.z = float(fixed_q[2])
-        retreat_tool0.orientation.w = float(fixed_q[3])
-        self._retreat_tool0_pose = retreat_tool0
+        retreat_tcp = self._brush_tip_to_tcp(retreat_tip)
+        retreat_tcp.orientation.x = float(fixed_q[0])
+        retreat_tcp.orientation.y = float(fixed_q[1])
+        retreat_tcp.orientation.z = float(fixed_q[2])
+        retreat_tcp.orientation.w = float(fixed_q[3])
+        self._retreat_tcp_pose = retreat_tcp
 
         self.get_logger().info("=" * 60)
         self.get_logger().info("=== STAGE 1: free-space approach (OMPL) ===")
         self.get_logger().info(
-            f"safety_tool0=({safety_tool0.position.x:.3f},"
-            f"{safety_tool0.position.y:.3f},{safety_tool0.position.z:.3f})")
+            f"safety_tcp=({safety_tcp.position.x:.3f},"
+            f"{safety_tcp.position.y:.3f},{safety_tcp.position.z:.3f})")
         self.executing = True
         self.stage1_approach_free()
 
@@ -281,32 +337,33 @@ class MoveItExecutor(Node):
             co.operation = CollisionObject.ADD
             ps.world.collision_objects.append(co)
 
-        # --- 토치 (tool0 에 attached, cylinder 25cm, radius 2.5cm) ---
-        # 실제 torch 는 tool0 의 +Y 방향으로 뻗음 (수동 캘리브레이션으로 확정).
-        # SolidPrimitive.CYLINDER 의 기본 axis 는 +Z 이므로 X-축 90도 회전 적용.
+        # --- 토치 (tcp 에 attached, cylinder 25cm, radius 2.5cm) ---
+        # 실제 torch 는 tcp 의 TORCH_MOUNT_AXIS 방향으로 뻗음.
+        # SolidPrimitive.CYLINDER 의 기본 axis 는 +Z 이므로 회전 적용.
         torch_aco = AttachedCollisionObject()
-        torch_aco.link_name = EE_LINK  # "tool0"
+        torch_aco.link_name = EE_LINK  # "tcp"
         torch_aco.object.id = "brush"  # id 는 기존 유지 (scene_confirmed 로직 호환)
         torch_aco.object.header.frame_id = EE_LINK
         torch_prim = SolidPrimitive()
         torch_prim.type = SolidPrimitive.CYLINDER
         torch_prim.dimensions = [TORCH_LENGTH, 0.025]  # [height=0.25, radius=0.025]
         torch_pose = Pose()
-        # 중심 위치를 +Y 12.5cm 로 (cylinder 가 +Y 0 ~ +Y 25cm 차지)
-        torch_pose.position.x = 0.0
-        torch_pose.position.y = TORCH_LENGTH / 2.0  # 중심 +Y 12.5cm
-        torch_pose.position.z = 0.0
-        # X-축 90도 회전: cylinder 의 default +Z axis 를 +Y 로 회전
-        # quaternion = (sin(45°), 0, 0, cos(45°)) ≈ (0.7071, 0, 0, 0.7071)
-        half_angle = math.pi / 4.0
-        torch_pose.orientation.x = math.sin(half_angle)
-        torch_pose.orientation.y = 0.0
-        torch_pose.orientation.z = 0.0
-        torch_pose.orientation.w = math.cos(half_angle)
+        # 중심 위치를 axis 방향 TORCH_LENGTH/2 로 (cylinder 가 0 ~ TORCH_LENGTH 차지)
+        ox, oy, oz = _torch_attach_offset(TORCH_MOUNT_AXIS)
+        torch_pose.position.x = ox
+        torch_pose.position.y = oy
+        torch_pose.position.z = oz
+        # cylinder 의 default +Z axis 를 TORCH_MOUNT_AXIS 로 회전
+        qx, qy, qz, qw = _torch_attach_quat(TORCH_MOUNT_AXIS)
+        torch_pose.orientation.x = qx
+        torch_pose.orientation.y = qy
+        torch_pose.orientation.z = qz
+        torch_pose.orientation.w = qw
         torch_aco.object.primitives.append(torch_prim)
         torch_aco.object.primitive_poses.append(torch_pose)
         torch_aco.object.operation = CollisionObject.ADD
-        torch_aco.touch_links = ["tool0", "wrist_3_link", "wrist_2_link", "flange"]
+        # RB10 link 이름. 손목 마지막 link 들 + tcp 자체.
+        torch_aco.touch_links = ["tcp", "link6", "link5"]
         ps.robot_state.attached_collision_objects.append(torch_aco)
         ps.robot_state.is_diff = True
 
@@ -341,46 +398,66 @@ class MoveItExecutor(Node):
         elif not resp.success:
             self.get_logger().warn("ApplyPlanningScene 실패 (success=False)")
 
-    # ---- 궤적 직접 실행 (joint_command 퍼블리시) --------------------------------
+    # ---- 궤적 실행 (FollowJointTrajectory action) ---------------------------
     def execute_trajectory_direct(self, traj, on_complete=None):
-        """궤적 포인트를 시간에 맞춰 /joint_command 로 퍼블리시.
-        on_complete: 실행 끝나고 호출할 callback. 다음 stage 트리거용."""
-        points = traj.joint_trajectory.points
-        names = list(traj.joint_trajectory.joint_names)
-        if not points:
+        """RB10 driver 의 FollowJointTrajectory action 으로 trajectory 전송.
+        on_complete: action 성공 후 호출할 callback (다음 stage 트리거용).
+        함수명은 호출처 호환을 위해 유지."""
+        if not traj.joint_trajectory.points:
             self.get_logger().warn("빈 궤적")
             if on_complete is None:
                 self.executing = False
             return
 
-        self.get_logger().info(f"궤적 실행 시작: {len(points)} 포인트")
+        if not self.traj_action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error("FollowJointTrajectory action server 없음")
+            self.executing = False
+            return
 
-        def _run():
-            import time
-            prev_time = 0.0
-            for i, pt in enumerate(points):
-                t_sec = pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9
-                dt = t_sec - prev_time
-                if dt > 0:
-                    time.sleep(dt)
-                prev_time = t_sec
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory = traj.joint_trajectory  # trajectory_msgs/JointTrajectory 그대로
+        # path/goal tolerances 는 비워둠 (controller 디폴트 사용).
+        # 필요시 차후에 GoalTolerance 추가.
 
-                cmd = JointState()
-                cmd.name = names
-                cmd.position = list(pt.positions)
-                if pt.velocities:
-                    cmd.velocity = list(pt.velocities)
-                self.joint_cmd_pub.publish(cmd)
+        self.get_logger().info(
+            f"FollowJointTrajectory 전송: {len(traj.joint_trajectory.points)} 포인트")
 
-            self.get_logger().info(">>> 궤적 실행 완료")
-            # joint_state 안정화 짧게 대기 (다음 stage 가 current_joint_state 쓰니까)
-            time.sleep(0.5)
+        send_future = self.traj_action_client.send_goal_async(goal)
+
+        def _goal_response(fut):
+            try:
+                handle = fut.result()
+            except Exception as e:
+                self.get_logger().error(f"send_goal 실패: {e}")
+                self.executing = False
+                return
+            if not handle.accepted:
+                self.get_logger().error("Trajectory goal rejected")
+                self.executing = False
+                return
+            result_future = handle.get_result_async()
+            result_future.add_done_callback(_result_done)
+
+        def _result_done(fut):
+            try:
+                res = fut.result().result
+            except Exception as e:
+                self.get_logger().error(f"trajectory result 실패: {e}")
+                self.executing = False
+                return
+            # FollowJointTrajectory.Result.error_code: 0 = SUCCESSFUL
+            if res.error_code != 0:
+                self.get_logger().error(
+                    f"Trajectory 실행 에러 code={res.error_code}: {res.error_string}")
+                self.executing = False
+                return
+            self.get_logger().info(">>> 궤적 실행 완료 (action SUCCESS)")
             if on_complete is not None:
                 on_complete()
             else:
                 self.executing = False
 
-        threading.Thread(target=_run, daemon=True).start()
+        send_future.add_done_callback(_goal_response)
 
     # ---- helpers for 4-stage approach ---------------------------------------
     def _offset_along_normal(self, pose, distance):
@@ -426,10 +503,10 @@ class MoveItExecutor(Node):
 
         return c
 
-    def _compute_snapped_tool0_waypoints(self):
-        """current_waypoints 를 표면 스냅 + densify + tool0 변환한 결과 반환.
+    def _compute_snapped_tcp_waypoints(self):
+        """current_waypoints 를 표면 스냅 + densify + tcp 변환한 결과 반환.
         Stage 2/3 양쪽이 같은 변환 결과를 써야 일관됨.
-        Returns: (snapped_tip_wps, tool0_wps, target, n)
+        Returns: (snapped_tip_wps, tcp_wps, target, n)
         """
         target = get_target(self.cfg, self.active_target_name)
         sp, n = get_surface_plane(target)
@@ -449,8 +526,8 @@ class MoveItExecutor(Node):
             sw.orientation.w = float(fixed_q[3])
             snapped.append(sw)
         densified = self._densify_waypoints(snapped, spacing_m=0.005)
-        tool0_wps = [self._brush_tip_to_tool0(wp) for wp in densified]
-        return densified, tool0_wps, target, n
+        tcp_wps = [self._brush_tip_to_tcp(wp) for wp in densified]
+        return densified, tcp_wps, target, n
 
     # ---- Stage 1: free-space approach via MoveGroup action -------------------
     def stage1_approach_free(self):
@@ -478,7 +555,7 @@ class MoveItExecutor(Node):
         rs.is_diff = False
         goal.request.start_state = rs
         goal.request.goal_constraints = [
-            self._make_pose_constraints(self._safety_tool0_pose)
+            self._make_pose_constraints(self._safety_tcp_pose)
         ]
         goal.request.planner_id = PLANNER_ID
         goal.request.allowed_planning_time = ALLOWED_PLANNING_TIME
@@ -501,7 +578,7 @@ class MoveItExecutor(Node):
         rs.is_diff = False
         goal.request.start_state = rs
         goal.request.goal_constraints = [
-            self._make_pose_constraints(self._safety_tool0_pose)
+            self._make_pose_constraints(self._safety_tcp_pose)
         ]
         # planner_id 비움 — 서버 기본 사용
         goal.request.planner_id = ""
@@ -584,8 +661,8 @@ class MoveItExecutor(Node):
         rs.is_diff = False
         req.start_state = rs
 
-        # 목표: 표면 첫 점 (tool0 좌표)
-        req.waypoints = [self._stage3_tool0_wps[0]]
+        # 목표: 표면 첫 점 (tcp 좌표)
+        req.waypoints = [self._stage3_tcp_wps[0]]
         req.max_step = 0.005
         req.jump_threshold = 5.0
         req.avoid_collisions = True
@@ -613,9 +690,9 @@ class MoveItExecutor(Node):
         req.path_constraints.orientation_constraints.append(oc)
 
         # 디버그: stage 2 의 시작 → 끝 거리와 방향 검증
-        end_pose = self._stage3_tool0_wps[0]
-        # 현재 tool0 위치는 정확히 모르지만, 직전 stage 1 의 의도된 도착점 (safety_tool0_pose) 로 근사
-        start_pose = self._safety_tool0_pose
+        end_pose = self._stage3_tcp_wps[0]
+        # 현재 tcp 위치는 정확히 모르지만, 직전 stage 1 의 의도된 도착점 (safety_tcp_pose) 로 근사
+        start_pose = self._safety_tcp_pose
         delta = np.array([
             end_pose.position.x - start_pose.position.x,
             end_pose.position.y - start_pose.position.y,
@@ -651,18 +728,32 @@ class MoveItExecutor(Node):
         self.execute_trajectory_direct(
             traj, on_complete=self.plan_cartesian)
 
-    # ---- torch_tip → tool0 오프셋 변환 ------------------------------------------
+    # ---- torch_tip → tcp 오프셋 변환 ------------------------------------------
     @staticmethod
-    def _brush_tip_to_tool0(pose):
-        """torch_tip 기준 좌표를 tool0 기준으로 변환.
-        토치는 URDF tool0 의 로컬 +Y 축으로 뻗음 (수동 캘리브레이션으로 확정).
-        함수명은 내부 호환을 위해 유지."""
-        q = pose.orientation
+    def _local_axis_in_world(q, axis):
+        """쿼터니언 q 기준 로컬 axis ('+x'/'-x'/...) 의 world 방향 단위벡터."""
         x, y, z, w = q.x, q.y, q.z, q.w
-        # 쿼터니언의 로컬 +Y 축 방향 (world 기준)
-        ly = np.array([2*(x*y - z*w), 1 - 2*(x*x + z*z), 2*(y*z + x*w)])
+        if axis in ("+x", "-x"):
+            v = np.array([1 - 2*(y*y + z*z), 2*(x*y + z*w), 2*(x*z - y*w)])
+        elif axis in ("+y", "-y"):
+            v = np.array([2*(x*y - z*w), 1 - 2*(x*x + z*z), 2*(y*z + x*w)])
+        elif axis in ("+z", "-z"):
+            v = np.array([2*(x*z + y*w), 2*(y*z - x*w), 1 - 2*(x*x + y*y)])
+        else:
+            raise ValueError(f"unknown axis: {axis}")
+        if axis.startswith("-"):
+            v = -v
+        return v
+
+    @staticmethod
+    def _brush_tip_to_tcp(pose):
+        """torch_tip 기준 좌표를 tcp 기준으로 변환.
+        토치는 URDF tcp (RB10) / tool0 (UR10) 의 로컬 TORCH_MOUNT_AXIS 방향으로
+        TORCH_LENGTH 만큼 뻗음."""
+        axis_world = MoveItExecutor._local_axis_in_world(
+            pose.orientation, TORCH_MOUNT_AXIS)
         pos = np.array([pose.position.x, pose.position.y, pose.position.z])
-        new_pos = pos - TORCH_LENGTH * ly
+        new_pos = pos - TORCH_LENGTH * axis_world
         new_pose = Pose()
         new_pose.position.x = float(new_pos[0])
         new_pose.position.y = float(new_pos[1])
@@ -703,7 +794,7 @@ class MoveItExecutor(Node):
             new_wps.append(p)
         return new_wps
 
-    # ---- Stage 2: Cartesian path 계획 + 실행 --------------------------------
+    # ---- Stage 3: Cartesian path 계획 + 실행 --------------------------------
     def plan_cartesian(self):
         if not self.cartesian_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error("/compute_cartesian_path 서비스 없음")
@@ -738,22 +829,22 @@ class MoveItExecutor(Node):
         self.get_logger().info(
             f"웨이포인트 밀집화: {len(snapped)} -> {len(densified)}")
 
-        # torch_tip → tool0 오프셋 적용
-        tool0_wps = [self._brush_tip_to_tool0(wp) for wp in densified]
+        # torch_tip → tcp 오프셋 적용
+        tcp_wps = [self._brush_tip_to_tcp(wp) for wp in densified]
 
         # [TORCH_CHECK] 첫 waypoint 변환 검증
         _first_tip = densified[0]
-        _first_tool0 = tool0_wps[0]
+        _first_tcp = tcp_wps[0]
         _dist = np.linalg.norm([
-            _first_tip.position.x - _first_tool0.position.x,
-            _first_tip.position.y - _first_tool0.position.y,
-            _first_tip.position.z - _first_tool0.position.z,
+            _first_tip.position.x - _first_tcp.position.x,
+            _first_tip.position.y - _first_tcp.position.y,
+            _first_tip.position.z - _first_tcp.position.z,
         ])
         self.get_logger().info(
             f"[TORCH_CHECK] torch_tip=({_first_tip.position.x:.3f},"
             f"{_first_tip.position.y:.3f},{_first_tip.position.z:.3f}) → "
-            f"tool0=({_first_tool0.position.x:.3f},{_first_tool0.position.y:.3f},"
-            f"{_first_tool0.position.z:.3f}) 거리={_dist*100:.1f}cm "
+            f"tcp=({_first_tcp.position.x:.3f},{_first_tcp.position.y:.3f},"
+            f"{_first_tcp.position.z:.3f}) 거리={_dist*100:.1f}cm "
             f"(기대={TORCH_LENGTH*100:.0f}cm)"
         )
 
@@ -768,15 +859,15 @@ class MoveItExecutor(Node):
         rs.is_diff = False
         req.start_state = rs
 
-        req.waypoints = tool0_wps
+        req.waypoints = tcp_wps
         req.max_step = 0.005  # 5mm
         req.jump_threshold = 0.0  # 점프 제한 없음
         req.avoid_collisions = True
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
 
-        # ---- OrientationConstraint: FIXED_TOOL0_QUAT 자세 유지 ----
-        # 붓 축(tool0 +Y) 중심 회전만 자유. 나머지는 tight.
+        # ---- OrientationConstraint: tcp 의 EE 자세 유지 ----
+        # 붓 축(tcp 의 TORCH_MOUNT_AXIS) 중심 회전만 자유. 나머지는 tight.
         ee_q = ee_quat_for_target(target)
         brush_dir_world = -np.asarray(n, dtype=float)
         free_axis = int(np.argmax(np.abs(brush_dir_world)))
@@ -796,25 +887,21 @@ class MoveItExecutor(Node):
         req.path_constraints = Constraints()
         req.path_constraints.orientation_constraints.append(oc)
 
-        # ---- 디버그: brush_tip 의 tool0 +Y 방향 검증 ----
+        # ---- 디버그: brush_tip 의 tcp TORCH_MOUNT_AXIS 방향 검증 ----
         first_tip = densified[0]
-        q = first_tip.orientation
         tip_p = np.array([first_tip.position.x, first_tip.position.y, first_tip.position.z])
-        local_y_in_world = np.array([
-            2*(q.x*q.y - q.z*q.w),
-            1 - 2*(q.x*q.x + q.z*q.z),
-            2*(q.y*q.z + q.x*q.w),
-        ])
+        local_axis_in_world = self._local_axis_in_world(
+            first_tip.orientation, TORCH_MOUNT_AXIS)
         self.get_logger().info(
             f"[CHECK] brush_tip=({tip_p[0]:.3f},{tip_p[1]:.3f},{tip_p[2]:.3f}) | "
-            f"tool0 local+Y in world=({local_y_in_world[0]:+.2f},"
-            f"{local_y_in_world[1]:+.2f},{local_y_in_world[2]:+.2f}) "
+            f"tcp local{TORCH_MOUNT_AXIS} in world=({local_axis_in_world[0]:+.2f},"
+            f"{local_axis_in_world[1]:+.2f},{local_axis_in_world[2]:+.2f}) "
             f"[기대: -normal=({brush_dir_world[0]:+.2f},"
             f"{brush_dir_world[1]:+.2f},{brush_dir_world[2]:+.2f})]")
         self.get_logger().info(
-            f"Cartesian 요청: {len(tool0_wps)} wp, 첫 tool0=("
-            f"{tool0_wps[0].position.x:.3f},{tool0_wps[0].position.y:.3f},"
-            f"{tool0_wps[0].position.z:.3f}) | "
+            f"Cartesian 요청: {len(tcp_wps)} wp, 첫 tcp=("
+            f"{tcp_wps[0].position.x:.3f},{tcp_wps[0].position.y:.3f},"
+            f"{tcp_wps[0].position.z:.3f}) | "
             f"ori constraint free_axis={['x','y','z'][free_axis]} tol={tol}")
 
         fut = self.cartesian_client.call_async(req)
@@ -864,7 +951,7 @@ class MoveItExecutor(Node):
         rs.is_diff = False
         req.start_state = rs
 
-        req.waypoints = [self._retreat_tool0_pose]
+        req.waypoints = [self._retreat_tcp_pose]
         req.max_step = 0.005
         req.jump_threshold = 5.0
         req.avoid_collisions = True
