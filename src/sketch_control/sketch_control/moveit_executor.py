@@ -63,14 +63,15 @@ RETURN_TO_READY = True   # False 면 Stage 5 비활성 (디버깅용)
 # RB10 joint 운동학 순서 (URDF 기준).
 # 주의: /joint_states 토픽은 알파벳 순으로 발행됨 (base, elbow, shoulder, wrist1, wrist2, wrist3) —
 # 이 dict 는 이름 매핑이라 순서 무관, 안전.
-# 각 값은 RB10 실로봇에서 teach pendant 로 안전한 자세 만든 후 /joint_states 읽어 실측해야 함.
+# 측정일: 2026-05-04 (재측정), 작업면: 정면 보드, base 한 바퀴 풀어 +179° 근처
+# 주의: base 가 +π 한계 (±3.14) 에 매우 가까움. URDF 한계는 ±2π 로 늘려둔 상태.
 READY_POSE_JOINTS = {
-    "base":     0.0,  # TODO: RB10 실측 필요
-    "shoulder": 0.0,  # TODO: RB10 실측 필요
-    "elbow":    0.0,  # TODO: RB10 실측 필요
-    "wrist1":   0.0,  # TODO: RB10 실측 필요
-    "wrist2":   0.0,  # TODO: RB10 실측 필요
-    "wrist3":   0.0,  # TODO: RB10 실측 필요
+    "base":     3.1262163604040025,
+    "shoulder": 0.606552515128741,
+    "elbow":   -2.2886676439084046,
+    "wrist1":   1.7385590970291847,
+    "wrist2":  -1.6410562421475305,
+    "wrist3":  -0.00018984993366257045,
 }
 
 # RB10 link0 가 world 원점에 fixed_joint 로 박혀있음. 작업대 위에 따로 옮기면 변경 필요.
@@ -127,6 +128,9 @@ class MoveItExecutor(Node):
         self.create_subscription(PoseArray, "/sketch_waypoints", self.on_waypoints, 10)
         self.create_subscription(Bool, "/sketch_execute", self.on_execute, 10)
         self.create_subscription(JointState, "/joint_states", self.on_joint_state, 10)
+        # 디버그용 — 실로봇 검증 시 Stage 5 단독 호출용
+        self.create_subscription(
+            Bool, "/debug_trigger_stage5", self.on_debug_trigger_stage5, 10)
         self.scene_pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
 
         # MoveIt endpoints (계획만 사용)
@@ -294,6 +298,20 @@ class MoveItExecutor(Node):
             f"{safety_tcp.position.y:.3f},{safety_tcp.position.z:.3f})")
         self.executing = True
         self.stage1_approach_free()
+
+    def on_debug_trigger_stage5(self, msg: Bool):
+        """디버그용 — 실로봇 검증 시 Stage 5 (READY_POSE 복귀) 단독 호출용.
+        Stage 1~4 거치지 않고 바로 Stage 5 만 trigger."""
+        if not msg.data:
+            return
+        if self.executing:
+            self.get_logger().warn(
+                "이미 실행 중 -> /debug_trigger_stage5 무시")
+            return
+        self.get_logger().info(
+            "[DEBUG] /debug_trigger_stage5 수신 -> Stage 5 단독 실행")
+        self.executing = True
+        self.stage5_return_to_ready()
 
     def on_scene_update(self, msg):
         """모니터링 용. scene_confirmed 는 ApplyPlanningScene 결과로 설정."""
