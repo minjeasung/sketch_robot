@@ -38,6 +38,8 @@ from moveit_msgs.msg import (
 )
 from shape_msgs.msg import SolidPrimitive
 from control_msgs.action import FollowJointTrajectory
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from moveit_msgs.msg import RobotTrajectory
 
 from sketch_control.targets import (
     load_objects_config, get_surface_plane, get_target, ee_quat_for_target,
@@ -59,6 +61,20 @@ PLANNING_ATTEMPTS = 5
 
 # Stage 5 — READY_POSE 복귀
 RETURN_TO_READY = True   # False 면 Stage 5 비활성 (디버깅용)
+
+# Stage 1 단독 디버그용. production 의 SAFETY_OFFSET 과 분리.
+# 토치 미장착 + 첫 실로봇 검증이라 일반보다 보수적으로 잡음.
+DEBUG_STAGE1_OFFSET = 0.15  # meters, surface normal 방향 후퇴 거리
+# RB10 setup: 벽이 link0 의 +X 방향, 평면 x = 0.80
+# → surface normal (벽 → 자유공간 방향) = (-1, 0, 0)
+DEBUG_STAGE1_SURFACE_NORMAL = (-1.0, 0.0, 0.0)
+
+# Joint-space jog 디버그용. motion pipeline 단독 검증.
+# 한 joint 만 작게 움직여 OMPL / IK / Cartesian goal 의존성 모두 우회.
+JOG_JOINT_INDEX = 5      # wrist3 (가장 국소적, 충돌 위험 최소)
+JOG_DELTA_RAD = 0.05     # ≈ 2.9°. 시각적으로 보이지만 무시할 수준
+JOG_DURATION_SEC = 10.0  # 10초에 걸쳐 움직임 → 인간 반응 충분
+JOG_NUM_POINTS = 50      # 0.2초 간격 보간
 
 # RB10 joint 운동학 순서 (URDF 기준).
 # 주의: /joint_states 토픽은 알파벳 순으로 발행됨 (base, elbow, shoulder, wrist1, wrist2, wrist3) —
@@ -131,6 +147,12 @@ class MoveItExecutor(Node):
         # 디버그용 — 실로봇 검증 시 Stage 5 단독 호출용
         self.create_subscription(
             Bool, "/debug_trigger_stage5", self.on_debug_trigger_stage5, 10)
+        # 디버그용 — 실로봇 검증 시 Stage 1 단독 호출용
+        self.create_subscription(
+            Bool, "/debug_trigger_stage1", self.on_debug_trigger_stage1, 10)
+        # 디버그용 — motion pipeline 단독 검증 (OMPL/IK 우회 jog)
+        self.create_subscription(
+            Bool, "/debug_trigger_jog", self.on_debug_trigger_jog, 10)
         self.scene_pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
 
         # MoveIt endpoints (계획만 사용)
@@ -298,6 +320,143 @@ class MoveItExecutor(Node):
             f"{safety_tcp.position.y:.3f},{safety_tcp.position.z:.3f})")
         self.executing = True
         self.stage1_approach_free()
+
+    def on_debug_trigger_stage1(self, msg: Bool):
+        """디버그용 — 실로봇 검증 시 Stage 1 (자유공간 approach) 단독 호출용.
+
+        current_waypoints[0] 을 surface waypoint 로 보고, surface normal 방향으로
+        DEBUG_STAGE1_OFFSET 만큼 떨어진 safe_pose 계산.
+        현재 joint state → safe_pose 를 Stage 1 planner 로 plan, 성공 시 실행.
+        Stage 2~5 는 트리거하지 않는다.
+
+        publish_test_waypoint 로 /sketch_waypoints 먼저 publish 한 후 실행할 것.
+        """
+        if not msg.data:
+            return
+        if self.executing:
+            self.get_logger().warn(
+                "이미 실행 중 -> /debug_trigger_stage1 무시")
+            return
+        if not self.current_waypoints:
+            self.get_logger().error(
+                "/sketch_waypoints 가 비어있음. "
+                "publish_test_waypoint 먼저 실행 필요.")
+            return
+        if self.current_joint_state is None:
+            self.get_logger().error("joint_state 미수신 -> 실행 보류")
+            return
+
+        self.get_logger().info(
+            "[DEBUG] /debug_trigger_stage1 수신 -> Stage 1 단독 실행")
+
+        waypoint = self.current_waypoints[0]
+
+        nx, ny, nz = DEBUG_STAGE1_SURFACE_NORMAL
+        safe_pose = Pose()
+        safe_pose.position.x = waypoint.position.x + DEBUG_STAGE1_OFFSET * nx
+        safe_pose.position.y = waypoint.position.y + DEBUG_STAGE1_OFFSET * ny
+        safe_pose.position.z = waypoint.position.z + DEBUG_STAGE1_OFFSET * nz
+        safe_pose.orientation = copy.deepcopy(waypoint.orientation)
+
+        self.get_logger().info(
+            f"[DEBUG] Stage 1 target safe_pose: "
+            f"({safe_pose.position.x:.3f}, {safe_pose.position.y:.3f}, "
+            f"{safe_pose.position.z:.3f})"
+        )
+        self.get_logger().info(
+            f"[DEBUG] safe_pose orientation (xyzw): "
+            f"({safe_pose.orientation.x:.4f}, {safe_pose.orientation.y:.4f}, "
+            f"{safe_pose.orientation.z:.4f}, {safe_pose.orientation.w:.4f})"
+        )
+
+        self._safety_tcp_pose = safe_pose
+        self.executing = True
+        self.stage1_approach_free(on_complete=self._debug_stage1_done)
+
+    def _debug_stage1_done(self):
+        self.get_logger().info("[DEBUG] Stage 1 단독 실행 완료")
+        self.executing = False
+
+    def on_debug_trigger_jog(self, msg: Bool):
+        """매우 작은 joint-space 동작으로 motion pipeline 검증.
+
+        OMPL / IK / Cartesian goal / planning scene 의존성 모두 없음.
+        한 joint (wrist3) 에 JOG_DELTA_RAD 를 JOG_DURATION_SEC 동안 적용.
+        Trajectory 직접 빌드 → execute_trajectory_direct 호출.
+        """
+        if not msg.data:
+            return
+        if self.executing:
+            self.get_logger().warn(
+                "이미 실행 중 -> /debug_trigger_jog 무시")
+            return
+
+        self.get_logger().info(
+            "[DEBUG] /debug_trigger_jog 수신 -> joint-space jog 단독 실행")
+
+        if self.current_joint_state is None or \
+           len(self.current_joint_state.position) == 0:
+            self.get_logger().error(
+                "current_joint_state 미수신. /joint_states 흐름 확인.")
+            return
+
+        n = len(self.current_joint_state.position)
+        if JOG_JOINT_INDEX >= n:
+            self.get_logger().error(
+                f"JOG_JOINT_INDEX={JOG_JOINT_INDEX} 가 joint 수({n}) 초과")
+            return
+
+        current = list(self.current_joint_state.position)
+        target = list(current)
+        target[JOG_JOINT_INDEX] = current[JOG_JOINT_INDEX] + JOG_DELTA_RAD
+
+        target_joint_name = self.current_joint_state.name[JOG_JOINT_INDEX]
+        self.get_logger().info(
+            f"[DEBUG] jog target joint: {target_joint_name} "
+            f"({current[JOG_JOINT_INDEX]:.4f} -> {target[JOG_JOINT_INDEX]:.4f}, "
+            f"delta={JOG_DELTA_RAD:+.4f} rad)")
+        self.get_logger().info(
+            f"[DEBUG] jog duration: {JOG_DURATION_SEC}s, "
+            f"points: {JOG_NUM_POINTS}, "
+            f"평균 각속도: {JOG_DELTA_RAD / JOG_DURATION_SEC:.4f} rad/s "
+            f"(≈ {(JOG_DELTA_RAD / JOG_DURATION_SEC) * 57.3:.2f}°/s)")
+
+        traj = JointTrajectory()
+        traj.joint_names = list(self.current_joint_state.name)
+
+        avg_v = JOG_DELTA_RAD / JOG_DURATION_SEC
+        for i in range(JOG_NUM_POINTS):
+            alpha = i / (JOG_NUM_POINTS - 1)  # 0.0 ~ 1.0
+            point = JointTrajectoryPoint()
+            point.positions = [
+                current[j] + alpha * (target[j] - current[j])
+                for j in range(n)
+            ]
+            if i == 0 or i == JOG_NUM_POINTS - 1:
+                point.velocities = [0.0] * n
+            else:
+                point.velocities = [0.0] * n
+                point.velocities[JOG_JOINT_INDEX] = avg_v
+            t = alpha * JOG_DURATION_SEC
+            point.time_from_start.sec = int(t)
+            point.time_from_start.nanosec = int((t - int(t)) * 1e9)
+            traj.points.append(point)
+
+        rt = RobotTrajectory()
+        rt.joint_trajectory = traj
+
+        self.executing = True
+        try:
+            self.execute_trajectory_direct(rt, on_complete=self._jog_done)
+            self.get_logger().info("[DEBUG] jog trajectory sent.")
+        except Exception as e:
+            self.get_logger().error(f"jog trajectory 전송 실패: {e}")
+            self.executing = False
+
+    def _jog_done(self):
+        """Jog 완료 콜백 (Stage chain 진입 없음, executing 플래그만 해제)."""
+        self.get_logger().info("[DEBUG] jog 단독 실행 완료")
+        self.executing = False
 
     def on_debug_trigger_stage5(self, msg: Bool):
         """디버그용 — 실로봇 검증 시 Stage 5 (READY_POSE 복귀) 단독 호출용.
@@ -548,7 +707,9 @@ class MoveItExecutor(Node):
         return densified, tcp_wps, target, n
 
     # ---- Stage 1: free-space approach via MoveGroup action -------------------
-    def stage1_approach_free(self):
+    def stage1_approach_free(self, on_complete=None):
+        # on_complete: 실행 완료 후 호출할 콜백. None 이면 production 기본 (Stage 2 chain).
+        self._stage1_on_complete = on_complete or self.stage2_approach_linear
         # PlanningScene 검증 대기 (attached torch + wall 등록 확인)
         import time
         wait_start = time.time()
@@ -654,8 +815,9 @@ class MoveItExecutor(Node):
 
         # 0.3x 스케일링 (cartesian 과 동일)
         traj = self._rescale_trajectory(traj, scale=0.3)
-        self.execute_trajectory_direct(
-            traj, on_complete=self.stage2_approach_linear)
+        on_complete = getattr(self, "_stage1_on_complete", None) \
+            or self.stage2_approach_linear
+        self.execute_trajectory_direct(traj, on_complete=on_complete)
 
     # ---- Stage 2: linear approach to first surface point (cartesian) --------
     def stage2_approach_linear(self):

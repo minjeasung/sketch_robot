@@ -162,3 +162,82 @@ E: (병렬 트랙) ZED 드라이버만 띄워보기
 
 ### 산출 파일
 - output/phase4_session1_rb10_driver_setup.md  (전체 정리)
+
+============================================================
+2026-05-05 Phase 4 Session 4 — RB10 motion pipeline 검증
+============================================================
+
+목표: Stage 1 단독 검증 + 안전한 retry 메커니즘 정착
+
+진행:
+
+1. Stage 1 단독 trigger 추가
+   - patch: prompts/2026-05-05_phase4_stage1_trigger.md
+   - /debug_trigger_stage1 (Bool), Stage 5 와 동일 패턴
+   - DEBUG_STAGE1_OFFSET=0.15m (production offset 과 분리)
+   - publish_test_waypoint.py 신설 — tf2 로 link0->tcp 실측 orientation 사용
+     (RB10 wall-facing quat 미정인 상태 우회)
+   - stage1_approach_free 에 on_complete 인자 추가 → Stage 2 chain 차단 가능
+   - 회귀 가드: _stage1_result 의 'or stage2_approach_linear' fallback 으로 production 흐름 보존
+   - colcon build OK
+
+2. Stage 1 단독 1차 시도 — 사고 발생
+   - waypoint (0.80, 0, 0.45), safe_pose (0.65, 0, 0.45)
+   - planning OK 10 포인트, 16ms (서버 reject 없이 즉시 success)
+   - FollowJointTrajectory 전송 약 1.05초 후 controller deactivate
+     log: "Trajectory 실행 에러 code=-1: Current goal cancelled during deactivate transition"
+   - 로봇이 swooping path 로 +Y 방향 휘두르며 캐비닛 (사진 왼쪽 백색 박스) 윗면 임팩트
+   - RB10 내장 충돌 감지 → 자체 안전정지 발동
+   - 본인 / 로봇 / 캐비닛 모두 큰 손상 없음
+
+   원인:
+   - planning scene 에 'wall' + 'brush' 만 등록, 캐비닛/책상/주변 장비 미등록 → OMPL 자유공간 인식
+   - Cartesian goal + READY 의 wrist-up orientation 강제 → IK 해 공간 좁아 OMPL 우회 path 선택
+   - rescale 0.3x 도 인간 반응 시간 대비 빠름 (10 포인트 / 사실상 1~3초 모션)
+
+3. Joint-space jog trigger 추가
+   - patch: prompts/2026-05-05_phase4_jog_debug.md
+   - /debug_trigger_jog (Bool) — OMPL/IK/planning scene 모두 우회
+   - JointTrajectory 직접 빌드 → execute_trajectory_direct
+   - wrist3 (idx 5) 만 0.05 rad, 10s, 50점 선형 보간
+   - Cartesian Stage 1 trigger 와 분리된 새 콜백 (회귀 없음)
+   - msg.data 가드 추가 (Bool false 무시)
+
+4. Joint-space jog 검증 통과
+   - trigger 수신 + trajectory 전송 정상
+   - TCP_NOW quat 변화로 회전 확인:
+     before: quat=(-0.000, 0.707, 0.707, 0.000)
+     after:  quat=(-0.018, 0.707, 0.707, -0.018)
+     local axis 들 0.05 rad 만큼 회전, commanded 와 정확히 일치
+   - controller deactivate 없이 10초 정상 완료
+   - 시각으로는 못 봤지만 (토치/마커 없는 flange 자전) 데이터상 명확
+
+검증 완료 항목:
+- ROS -> moveit_executor -> controller -> 실로봇 신호 경로 정상
+- joint_command publish 정상
+- execute_trajectory_direct 동작
+- trajectory 완료 콜백 (Stage chain 차단) 정상
+- RB10 자체 충돌감지 안전망 정상 작동
+
+미해결 이슈 (다음 세션 처리):
+- planning scene 의 환경 collision objects (캐비닛/책상/주변 장비) 미등록 -> ZED 로 해결 예정
+- 펜던트 속도 override 가 ROS trajectory 에 적용되는지 미검증 (시간 부족)
+- 펜던트 wrist3 표시 (97.38°) vs joint_states wrist3 값 (69.4°) 불일치
+  -> joint name 매핑 또는 zero offset 차이 추정, ZED 셋업 시 TF 검증과 같이 확인
+- READY_POSE_JOINTS 코드값이 사고 전 자세 (base ≈ +179°) 그대로
+  -> 현재 펜던트 자세 (base ≈ 3.45° 등) 와 다름. Session 5 시작 시 갱신 필요
+  -> 갱신 전엔 /debug_trigger_stage5 사용 금지 (큰 자세 차이로 위험)
+
+다음 세션 (Session 5) 계획:
+- READY_POSE_JOINTS 갱신 (현재 펜던트 자세 또는 새로 정한 안전 자세)
+- ZED 통합:
+  * 마운팅 위치 결정 + 측정
+  * SDK + ROS2 wrapper 설치 (CUDA / RTX 5060 호환)
+  * base_link -> ZED frame static TF
+  * PointCloud2 받기 검증
+- 점군 -> octomap (또는 collision object) 변환 회로
+- 보드 표면 분리 (RANSAC plane) 로 target 영역은 collision 에서 제외
+- 그 후 Stage 1 Cartesian goal 재시도 (planning scene 완성 상태)
+
+백업: 이번 세션은 코드 변경만. 큰 마일스톤 백업은 ZED 통합 완료 후로.
+
