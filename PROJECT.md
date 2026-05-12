@@ -24,7 +24,54 @@
 | 1 | Python sketch_ui (tkinter) + Isaac Sim 검증, MoveIt 2-stage approach | ✓ 완료 |
 | 2 | Unity SketchManager.cs 인터페이스로 교체, ROS-TCP-Connector | ✓ 완료 |
 | 3 | MoveIt 충돌 회피 안정화 (4-stage + Stage 5 복귀) | ◐ 부분 완료, wall 등록 이슈 보류 |
-| 4 | 실로봇 (RB10-1300) + ZED 통합 (Phase 4, 5 합침). URDF/MoveIt 재셋업, ZED 인식, hand-eye calib, 통합 동작 | ☐ 다음 |
+| 4 | 실로봇 (RB10-1300) + ZED 통합 (Phase 4, 5 합침). URDF/MoveIt 재셋업, ZED 인식, hand-eye calib, 통합 동작 | ◐ 진행 중 |
+
+### Phase 4 진행 현황 (2026-05-12 기준)
+
+**완료:**
+- 4.1 RB10 driver 셋업 (snucem)
+  - minjeasung/rbpodo_ros2 fork (commit 2971eac): base limit ±2π, joint accel 5.0
+- 4.2 moveit_executor.py UR10→RB10 포팅 (sketch_robot commit 90e9653)
+- 4.3 Stage 5 단독 실로봇 검증 통과 (snucem, commit 7a6f87c)
+- 4.0 Isaac Sim에 RB10 URDF import (시뮬 컴 minjea@minjea)
+  - scripts/setup_isaac_assets.sh 로 xacro → urdf → mesh 복사 자동화
+  - Isaac Sim 5.1 File > Import 로 .usd 생성 (~/sketch_robot_ws/isaac_assets/)
+
+**미완성 (보관):**
+- 4.X Stage 1 단독 trigger + jog (commit d7c4d73, 다른 채팅 시도 실패)
+  - prompts/2026-05-05_phase4_*.md 참고
+
+**다음:**
+- isaac_sim_rb10.py 작성 (UR10 → RB10 포팅)
+  - link/joint 이름 매핑: shoulder_pan→base, shoulder_lift→shoulder,
+    elbow→elbow, wrist_1→wrist1, wrist_2→wrist2, wrist_3→wrist3, tool0→tcp
+  - READY_POSE 갱신 (UR10 값 → RB10 값)
+- 시뮬에서 Stage 1~5 검증 (Phase 3 보류 이슈인 wall 등록도 같이 풀기)
+- 토치 준비되면 실로봇 Stage 1~4 (TORCH_MOUNT_AXIS 결정)
+- ZED 통합 (외부 고정, eye-to-hand, static TF, RANSAC plane)
+
+**자산:**
+- snucem: 실로봇 + driver 검증 완료
+- 시뮬 컴 (minjea@minjea): Isaac Sim 5.1 + RB10 USD
+  - 위치: ~/sketch_robot_ws/isaac_assets/rb10_1300e_u.usd
+  - 재생성: bash ~/sketch_robot_ws/scripts/setup_isaac_assets.sh
+- perception/ransac_multiplane.py: ZED 통합 출발점 (synthetic 점군까지 완성)
+- minjeasung/rbpodo_ros2 fork: RB10 환경 패치
+
+**환경:**
+- 두 컴이 sketch_robot repo 통해 동기화 (origin/main)
+- isaac_assets/ 는 .gitignore (재생성 가능)
+
+**다음 세션 시작 시 (시뮬 컴):**
+- Isaac Sim 띄우기: ~/sketch_robot_ws/run_isaac_sim.sh (현재는 ur10용 스크립트)
+- 또는 빈 sim: `source ~/isaac_env/bin/activate && isaacsim`
+- USD reference: ~/sketch_robot_ws/isaac_assets/rb10_1300e_u.usd
+
+**다음 세션 시작 시 (snucem):**
+- 로봇 자세 = base +179° 근처가 READY (펜던트로 잡음)
+- driver launch: `ros2 launch rbpodo_moveit_config moveit.launch.py model_id:=rb10_1300e_u robot_ip:=10.0.2.7 use_fake_hardware:=false`
+- moveit_executor: `ros2 run sketch_control moveit_executor`
+- Stage 5 sanity: `ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"`
 
 ### Phase 3 보류 이슈
 ApplyPlanningScene service 가 success=True 응답하지만 GetPlanningScene 으로 확인 시 `world.collision_objects=[]` (wall 미등록). frame_id 'base_link', 'world', 'World' 모두 동일 증상. ROS2 Jazzy + UR + Isaac Sim + ur_moveit_config 의 누적 셋업 이슈로 추정. 시뮬에서 wall 등록 디버깅 보류, 실로봇 셋업 시 재검토 예정.
