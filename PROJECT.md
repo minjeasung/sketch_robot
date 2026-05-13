@@ -305,3 +305,69 @@ ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"
 - objects.yaml: wall/table/철판/막대/카메라/롤러 collision 등록
 - ZED 통합 시작 (perception/ransac_multiplane.py 활용)
 - 실로봇 토치/롤러 마운팅 (실로봇 작업 가능해지면)
+
+---
+
+## 시뮬 검증 실행 절차 (터미널 4개)
+
+새 터미널마다 ROS 환경 source 필요. ROS_DOMAIN_ID=11 이 `~/.bashrc` 에 박혀있음 (시뮬 컴).
+
+### 터미널 1 — Isaac Sim
+
+```bash
+source ~/isaac_env/bin/activate
+isaacsim --exec ~/sketch_robot_ws/src/sketch_control/sketch_control/isaac_sim_rb10.py
+```
+
+Isaac Sim 창 뜨면 **▶ Play** 버튼 누름.
+
+### 터미널 2 — controller_manager + MoveIt + RViz
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/rb10_ws/install/setup.bash
+
+ros2 launch rbpodo_moveit_config moveit.launch.py \
+    model_id:=rb10_1300e_u use_isaac_sim:=true use_fake_hardware:=false
+```
+
+기대: segfault 없이 controller_manager activate, jsb + jtc active, RViz 창 뜸.
+
+### 터미널 3 — moveit_executor
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/rb10_ws/install/setup.bash
+source ~/sketch_robot_ws/install/setup.bash
+
+ros2 run sketch_control moveit_executor
+```
+
+기대: "MoveIt Executor 노드 시작" + PlanningScene apply + [TCP_NOW] 주기 발행.
+
+### 터미널 4 — trigger (검증마다 새로)
+
+```bash
+source /opt/ros/jazzy/setup.bash
+
+# 다른 자세로 옮기기 (Stage 5 가 의미 있게 동작하도록)
+ros2 topic pub --once /joint_trajectory_controller/joint_trajectory trajectory_msgs/msg/JointTrajectory "{
+  joint_names: ['base', 'shoulder', 'elbow', 'wrist1', 'wrist2', 'wrist3'],
+  points: [{positions: [0.5, -0.9343, 2.4247, -1.6293, 1.5676, 0.0], time_from_start: {sec: 3, nanosec: 0}}]
+}"
+
+# Stage 5 trigger (READY_POSE 로 복귀)
+ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"
+```
+
+### 종료 순서
+
+터미널 3 → 2 → 1 (Ctrl+C). Isaac Sim 마지막. 처음부터 다시 띄울 때도 같은 순서로.
+
+### 흔한 트러블슈팅
+
+- **/joint_command Subscription count: 0** → Isaac Sim 안 떠있음 (또는 ▶ Play 안 누름)
+- **/joint_states Publisher count: 2** → moveit.launch.py 가 옛 버전 (remap 누락). rbpodo_ros2 rebuild 필요
+- **Trajectory goal rejected** → start state 와 trajectory 첫 point 가 너무 다름. 또는 jtc 아직 inactive
+- **segfault on write** → ros 패키지 버전 mismatch. `sudo apt upgrade` 후 재시도
+- **ros2 control list 에서 다른 컴 노드 보임** → ROS_DOMAIN_ID 미확인. `echo $ROS_DOMAIN_ID` 가 11 인지
