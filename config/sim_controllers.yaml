@@ -1,0 +1,37 @@
+controller_manager:
+  ros__parameters:
+    # Isaac Sim 의 60Hz physics step 보다 빠르게 100Hz.
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - base
+      - shoulder
+      - elbow
+      - wrist1
+      - wrist2
+      - wrist3
+
+    command_interfaces:
+      - position
+
+    # 시뮬은 JointStateTopicSystem 이 velocity 도 같이 publish → state_interfaces 에 velocity 추가.
+    state_interfaces:
+      - position
+      - velocity
+
+    action_monitor_rate: 20.0
+
+    allow_partial_joints_goal: false
+    open_loop_control: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
