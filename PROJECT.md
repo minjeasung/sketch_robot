@@ -261,3 +261,47 @@ ros2 launch sketch_control phase2_unity.launch.py 2>&1 | tee /tmp/<task>.log
 - `~/sketch_robot_ws_BACKUP_phase2-complete_20260427`
 - `~/sketch_robot_ws_BACKUP_phase3-stuck_20260427`
 - Unity: `C:\Users\min67\sketchrobotunity_BACKUP_phase2-complete_20260427`
+
+### Phase 4 Session 4 추가 완료 (2026-05-13)
+
+**시뮬 환경 (minjea@minjea):**
+- Isaac Sim 5.1 + RB10 시각 환경 (테이블/철판/벽/ㄴ자 막대/카메라/롤러)
+- READY_POSE 자세 유지 + ROS2 OmniGraph
+- 실로봇과 동일 stack: rbpodo_ros2 fork + JointStateTopicSystem + jtc + MoveIt
+- moveit_executor 로 Stage 5 시뮬 검증 통과
+
+**rbpodo_ros2 fork 추가 패치 (commit 1adac25):**
+- rb_6dof.ros2_control.xacro: use_isaac_sim 분기
+- rb10_1300e_u.urdf.xacro: use_isaac_sim arg
+- moveit.launch.py: use_isaac_sim arg + joint_states remap
+
+**시뮬 띄우는 법 (시뮬 컴):**
+
+```bash
+# 1. Isaac Sim
+source ~/isaac_env/bin/activate
+isaacsim --exec ~/sketch_robot_ws/src/sketch_control/sketch_control/isaac_sim_rb10.py
+# 그 다음 Play 버튼
+
+# 2. controller_manager + moveit + rviz
+ros2 launch rbpodo_moveit_config moveit.launch.py \
+    model_id:=rb10_1300e_u use_isaac_sim:=true use_fake_hardware:=false
+
+# 3. moveit_executor
+ros2 run sketch_control moveit_executor
+
+# 4. trigger
+ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"
+```
+
+**환경:**
+- ROS_DOMAIN_ID=11 (시뮬 컴, snucem 과 분리)
+- ros-jazzy-joint-state-topic-hardware-interface (apt 설치 필요)
+- 모든 ROS 패키지 최신 (apt upgrade 후 ABI mismatch 해결)
+
+**다음 (Session 5+):**
+- TORCH_MOUNT_AXIS 결정 (시뮬 시각으로)
+- Stage 1~4 시뮬 검증
+- objects.yaml: wall/table/철판/막대/카메라/롤러 collision 등록
+- ZED 통합 시작 (perception/ransac_multiplane.py 활용)
+- 실로봇 토치/롤러 마운팅 (실로봇 작업 가능해지면)
