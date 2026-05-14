@@ -1,31 +1,50 @@
-# 작업 대상 물체 정의. Isaac Sim + sketch_ui + moveit_executor 가 공유.
-# name: USD prim 이름 + PlanningScene ID
-# shape: "box" 만 지원 (Phase 1.7)
-# position: world 기준 중심 좌표 (m)
-# size: 박스 크기 (m) - FixedCuboid scale 로 전달
-# color: 시각용 RGB (0~1)
-# sketch_face: 스케치 표면. "+x","-x","+y","-y","+z","-z"
-#   "-x" 면 = 박스 중심에서 -x 방향 표면. normal 은 -x.
-# enabled: false 면 씬 생성 + PlanningScene + UI 드롭다운에서 제외
-
+# 작업 대상 + 환경 물체 정의. Isaac Sim + sketch_ui + moveit_executor 가 공유.
+# 좌표계: world = link0 (RB10 base), TCP frame 정렬, 단위 m.
+# wall 만 sketch 대상 (sketch_face + ee_orientation 필요).
+# 나머지는 collision 회피 only.
 objects:
   - name: wall
     shape: box
-    position: [1.05, 0.0, 0.2]
-    size: [0.1, 1.5, 1.2]
-    color: [0.85, 0.75, 0.6]
-    sketch_face: "-x"
+    position: [0.0, -0.805, 0.5]
+    size: [1.0, 0.05, 1.0]
+    color: [0.95, 0.95, 0.95]
+    sketch_face: "+y"
+    ee_orientation: [-0.067, 0.0, -0.001, 0.998]
     enabled: true
-    # 수동 캘리브레이션된 tool0 orientation (xyzw, world 기준).
-    # 이 값에서 tool0 +Y 가 world +X (벽 방향) 을 향함.
-    ee_orientation: [0.726, 0.668, -0.111, 0.122]
 
-  - name: demo_box
+  - name: table
     shape: box
-    position: [0.7, 0.4, 0.3]
-    size: [0.3, 0.3, 0.3]
-    color: [0.4, 0.6, 0.9]
-    sketch_face: "+z"
-    enabled: false
+    position: [0.05, 0.10, -0.4165]
+    size: [0.80, 0.60, 0.813]
+    color: [0.4, 0.3, 0.2]
+    enabled: true
+
+  - name: plate
+    shape: box
+    position: [0.0, 0.0, -0.005]
+    size: [0.20, 0.20, 0.010]
+    color: [0.6, 0.6, 0.6]
+    enabled: true
+
+  - name: mount_seg1
+    shape: box
+    position: [0.2, 0.35, 0.015]
+    size: [0.05, 0.3, 0.05]
+    color: [0.7, 0.7, 0.7]
+    enabled: true
+
+  - name: mount_seg2
+    shape: box
+    position: [0.2, 0.5, 0.465]
+    size: [0.05, 0.05, 0.85]
+    color: [0.7, 0.7, 0.7]
+    enabled: true
+
+  - name: zed_camera
+    shape: box
+    position: [0.2, 0.5, 0.915]
+    size: [0.1753, 0.0303, 0.0431]
+    color: [0.1, 0.1, 0.1]
+    enabled: true
 
 active_target: wall

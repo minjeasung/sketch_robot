@@ -232,7 +232,7 @@ print(f"[OK] ZED 카메라 prim: {CAMERA_PATH} eye=(0.2,0.5,0.915) → target=(0
 
 # 시각 marker — Camera prim 은 viewport 에서 아이콘으로만 보임.
 # ZED2 실제 dimension (~175×30×33mm) 박스로 위치 확인 가능하게.
-ZED_CASE_SIZE = np.array([0.175, 0.030, 0.033])
+ZED_CASE_SIZE = np.array([0.1753, 0.0303, 0.0431])
 world.scene.add(VisualCuboid(
     prim_path="/World/SketchCameraCase",
     name="sketch_camera_case",
