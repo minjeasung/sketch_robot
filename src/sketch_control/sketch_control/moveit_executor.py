@@ -11,7 +11,10 @@ EE link: tcp / Base frame: link0 / Planning group: mainpulation (SRDF 오타)
   Stage 4: cartesian (표면 끝 → retreat pose)
   Stage 5: 자유 plan (retreat → READY_POSE)
 
-토치(EoAT)는 tcp 의 TORCH_MOUNT_AXIS 방향으로 뻗음. 마운팅 변경 시 그 상수만 갱신.
+EoAT (페인트 롤러) = T자 형태:
+  - rod: TCP 에서 ROD_AXIS 방향으로 ROD_LENGTH 만큼 (손잡이)
+  - roller: rod 끝점에서 ROLLER_LONG_AXIS 방향, 길이 ROLLER_LENGTH (가로축, perpendicular)
+마운팅 변경 시 상수 (ROD_*, ROLLER_*) 만 갱신.
 """
 import copy
 import math
@@ -93,18 +96,24 @@ READY_POSE_JOINTS = {
 # RB10 link0 가 world 원점에 fixed_joint 로 박혀있음. 작업대 위에 따로 옮기면 변경 필요.
 ROBOT_ORIGIN = (0.0, 0.0, 0.0)
 
-# 토치 길이 (tcp → torch_tip)
-TORCH_LENGTH = 0.25
-# 역호환 alias (내부 함수용)
-BRUSH_LENGTH = TORCH_LENGTH
+# ---- EoAT 형상 (T자: 손잡이 rod + 가로 roller) ---------------------------------
+# 손잡이 (rod) — TCP 에서 ROD_AXIS 방향으로 뻗는 cylinder
+ROD_LENGTH = 0.260
+ROD_RADIUS = 0.025
+ROD_AXIS = "-y"  # TCP local 어느 축으로 뻗는지 (= 기존 TORCH_MOUNT_AXIS)
 
-# 토치가 EE link (tcp) 의 로컬 어느 축으로 뻗는지.
-# 값: "+x", "-x", "+y", "-y", "+z", "-z"
-# 기본 +y 는 UR10 시뮬 시절 가정. RB10 실로봇 마운팅 후 실측해서 변경.
-TORCH_MOUNT_AXIS = "+y"  # TODO: RB10 + 새 EoAT 마운팅 후 실측 필요
+# 롤러 — rod 끝점에서 perpendicular 방향으로 뻗는 cylinder (가로축)
+ROLLER_LENGTH = 0.18
+ROLLER_RADIUS = 0.025
+ROLLER_LONG_AXIS = "+x"  # rod 끝점에서 어느 perpendicular 방향
+
+# TCP → rod 끝 (= 롤러 회전축 중심) 까지의 거리.
+# Cartesian / IK 가 "tip" 으로 삼는 점 = rod 끝점 (롤러는 그 위에서 측면 굴림).
+EOAT_TIP_OFFSET = ROD_LENGTH
+EOAT_TOTAL_REACH = ROD_LENGTH
 
 
-def _torch_attach_quat(axis):
+def _cylinder_axis_quat(axis):
     """SolidPrimitive.CYLINDER (default +z) 를 axis 방향으로 회전시키는 quaternion (x,y,z,w).
     scipy 의 align_vectors 로 동적 계산하여 부호 실수 방지."""
     target = {"+x": [1, 0, 0], "-x": [-1, 0, 0],
@@ -122,17 +131,17 @@ def _torch_attach_quat(axis):
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-def _torch_attach_offset(axis):
-    """cylinder 중심 위치 (tcp 기준), TORCH_LENGTH/2 만큼 axis 방향."""
+def _axis_offset(axis, distance):
+    """axis ('+x'/'-y'/...) 방향으로 distance 만큼 떨어진 점 (x, y, z)."""
     sign = -1.0 if axis.startswith("-") else 1.0
     a = axis[1]
-    half = TORCH_LENGTH / 2.0 * sign
+    d = distance * sign
     if a == "x":
-        return (half, 0.0, 0.0)
+        return (d, 0.0, 0.0)
     if a == "y":
-        return (0.0, half, 0.0)
+        return (0.0, d, 0.0)
     if a == "z":
-        return (0.0, 0.0, half)
+        return (0.0, 0.0, d)
     raise ValueError(f"unknown axis: {axis}")
 
 
@@ -476,16 +485,16 @@ class MoveItExecutor(Node):
         """모니터링 용. scene_confirmed 는 ApplyPlanningScene 결과로 설정."""
         scene_ids = set(obj.id for obj in msg.world.collision_objects)
         objects_ok = self._enabled_ids.issubset(scene_ids)
-        brush_ok = any(
-            ao.object.id == "brush"
+        eoat_ok = any(
+            ao.object.id == "eoat"
             for ao in msg.robot_state.attached_collision_objects)
-        if objects_ok and brush_ok and not getattr(self, "_monitor_logged", False):
+        if objects_ok and eoat_ok and not getattr(self, "_monitor_logged", False):
             self._monitor_logged = True
             self.get_logger().info(
-                f"[INFO] /monitored_planning_scene 에 {sorted(self._enabled_ids)} + brush 보임 "
+                f"[INFO] /monitored_planning_scene 에 {sorted(self._enabled_ids)} + eoat 보임 "
                 "(apply 결과로 confirmed 됨)")
 
-    # ---- PlanningScene (물체들 + 붓 AttachedCollisionObject) ------------------
+    # ---- PlanningScene (물체들 + EoAT AttachedCollisionObject) ----------------
     def publish_scene_periodic(self):
         if self.scene_confirmed:
             return
@@ -514,34 +523,54 @@ class MoveItExecutor(Node):
             co.operation = CollisionObject.ADD
             ps.world.collision_objects.append(co)
 
-        # --- 토치 (tcp 에 attached, cylinder 25cm, radius 2.5cm) ---
-        # 실제 torch 는 tcp 의 TORCH_MOUNT_AXIS 방향으로 뻗음.
-        # SolidPrimitive.CYLINDER 의 기본 axis 는 +Z 이므로 회전 적용.
-        torch_aco = AttachedCollisionObject()
-        torch_aco.link_name = EE_LINK  # "tcp"
-        torch_aco.object.id = "brush"  # id 는 기존 유지 (scene_confirmed 로직 호환)
-        torch_aco.object.header.frame_id = EE_LINK
-        torch_prim = SolidPrimitive()
-        torch_prim.type = SolidPrimitive.CYLINDER
-        torch_prim.dimensions = [TORCH_LENGTH, 0.025]  # [height=0.25, radius=0.025]
-        torch_pose = Pose()
-        # 중심 위치를 axis 방향 TORCH_LENGTH/2 로 (cylinder 가 0 ~ TORCH_LENGTH 차지)
-        ox, oy, oz = _torch_attach_offset(TORCH_MOUNT_AXIS)
-        torch_pose.position.x = ox
-        torch_pose.position.y = oy
-        torch_pose.position.z = oz
-        # cylinder 의 default +Z axis 를 TORCH_MOUNT_AXIS 로 회전
-        qx, qy, qz, qw = _torch_attach_quat(TORCH_MOUNT_AXIS)
-        torch_pose.orientation.x = qx
-        torch_pose.orientation.y = qy
-        torch_pose.orientation.z = qz
-        torch_pose.orientation.w = qw
-        torch_aco.object.primitives.append(torch_prim)
-        torch_aco.object.primitive_poses.append(torch_pose)
-        torch_aco.object.operation = CollisionObject.ADD
+        # --- EoAT (T자: rod + roller, tcp 에 attached) ---
+        # SolidPrimitive.CYLINDER 의 기본 axis 는 +Z 이므로 각 cylinder 에 회전 적용.
+        eoat_aco = AttachedCollisionObject()
+        eoat_aco.link_name = EE_LINK  # "tcp"
+        eoat_aco.object.id = "eoat"
+        eoat_aco.object.header.frame_id = EE_LINK
+
+        # primitive[0] — rod (손잡이): TCP 에서 ROD_AXIS 방향, 중심 ROD_LENGTH/2 만큼
+        rod_prim = SolidPrimitive()
+        rod_prim.type = SolidPrimitive.CYLINDER
+        rod_prim.dimensions = [ROD_LENGTH, ROD_RADIUS]  # [height, radius]
+        rod_pose = Pose()
+        rx, ry, rz = _axis_offset(ROD_AXIS, ROD_LENGTH / 2.0)
+        rod_pose.position.x = rx
+        rod_pose.position.y = ry
+        rod_pose.position.z = rz
+        rqx, rqy, rqz, rqw = _cylinder_axis_quat(ROD_AXIS)
+        rod_pose.orientation.x = rqx
+        rod_pose.orientation.y = rqy
+        rod_pose.orientation.z = rqz
+        rod_pose.orientation.w = rqw
+        eoat_aco.object.primitives.append(rod_prim)
+        eoat_aco.object.primitive_poses.append(rod_pose)
+
+        # primitive[1] — roller (가로축): rod 끝점에서 ROLLER_LONG_AXIS 방향.
+        # 위치: TCP 에서 (rod 끝점) — rod 의 끝점에는 roller 의 중심이 옴 (cylinder 의 중심점).
+        # 즉 roller 중심 = TCP frame 의 _axis_offset(ROD_AXIS, ROD_LENGTH).
+        # roller cylinder 자체는 ROLLER_LONG_AXIS 방향으로 길이 ROLLER_LENGTH 만큼 양쪽 대칭.
+        roller_prim = SolidPrimitive()
+        roller_prim.type = SolidPrimitive.CYLINDER
+        roller_prim.dimensions = [ROLLER_LENGTH, ROLLER_RADIUS]
+        roller_pose = Pose()
+        cx, cy, cz = _axis_offset(ROD_AXIS, ROD_LENGTH)
+        roller_pose.position.x = cx
+        roller_pose.position.y = cy
+        roller_pose.position.z = cz
+        lqx, lqy, lqz, lqw = _cylinder_axis_quat(ROLLER_LONG_AXIS)
+        roller_pose.orientation.x = lqx
+        roller_pose.orientation.y = lqy
+        roller_pose.orientation.z = lqz
+        roller_pose.orientation.w = lqw
+        eoat_aco.object.primitives.append(roller_prim)
+        eoat_aco.object.primitive_poses.append(roller_pose)
+
+        eoat_aco.object.operation = CollisionObject.ADD
         # RB10 link 이름. 손목 마지막 link 들 + tcp 자체.
-        torch_aco.touch_links = ["tcp", "link6", "link5"]
-        ps.robot_state.attached_collision_objects.append(torch_aco)
+        eoat_aco.touch_links = ["tcp", "link6", "link5"]
+        ps.robot_state.attached_collision_objects.append(eoat_aco)
         ps.robot_state.is_diff = True
 
         # publish 도 유지 (RViz 시각화 용)
@@ -558,7 +587,7 @@ class MoveItExecutor(Node):
 
         if not self.scene_initialized:
             self.get_logger().info(
-                "PlanningScene: 물체 + 토치 publish + apply 시도")
+                "PlanningScene: 물체 + EoAT(rod+roller) publish + apply 시도")
             self.scene_initialized = True
 
     def _apply_scene_done(self, future):
@@ -927,13 +956,12 @@ class MoveItExecutor(Node):
 
     @staticmethod
     def _brush_tip_to_tcp(pose):
-        """torch_tip 기준 좌표를 tcp 기준으로 변환.
-        토치는 URDF tcp (RB10) / tool0 (UR10) 의 로컬 TORCH_MOUNT_AXIS 방향으로
-        TORCH_LENGTH 만큼 뻗음."""
+        """rod tip (= 롤러 회전축 중심) 기준 좌표를 tcp 기준으로 변환.
+        rod 는 tcp 의 로컬 ROD_AXIS 방향으로 ROD_LENGTH 만큼 뻗음."""
         axis_world = MoveItExecutor._local_axis_in_world(
-            pose.orientation, TORCH_MOUNT_AXIS)
+            pose.orientation, ROD_AXIS)
         pos = np.array([pose.position.x, pose.position.y, pose.position.z])
-        new_pos = pos - TORCH_LENGTH * axis_world
+        new_pos = pos - ROD_LENGTH * axis_world
         new_pose = Pose()
         new_pose.position.x = float(new_pos[0])
         new_pose.position.y = float(new_pos[1])
@@ -1025,7 +1053,7 @@ class MoveItExecutor(Node):
             f"{_first_tip.position.y:.3f},{_first_tip.position.z:.3f}) → "
             f"tcp=({_first_tcp.position.x:.3f},{_first_tcp.position.y:.3f},"
             f"{_first_tcp.position.z:.3f}) 거리={_dist*100:.1f}cm "
-            f"(기대={TORCH_LENGTH*100:.0f}cm)"
+            f"(기대={ROD_LENGTH*100:.0f}cm)"
         )
 
         req = GetCartesianPath.Request()
@@ -1047,7 +1075,7 @@ class MoveItExecutor(Node):
         req.max_acceleration_scaling_factor = 0.3
 
         # ---- OrientationConstraint: tcp 의 EE 자세 유지 ----
-        # 붓 축(tcp 의 TORCH_MOUNT_AXIS) 중심 회전만 자유. 나머지는 tight.
+        # rod 축(tcp 의 ROD_AXIS) 중심 회전만 자유. 나머지는 tight.
         ee_q = ee_quat_for_target(target)
         brush_dir_world = -np.asarray(n, dtype=float)
         free_axis = int(np.argmax(np.abs(brush_dir_world)))
@@ -1067,14 +1095,14 @@ class MoveItExecutor(Node):
         req.path_constraints = Constraints()
         req.path_constraints.orientation_constraints.append(oc)
 
-        # ---- 디버그: brush_tip 의 tcp TORCH_MOUNT_AXIS 방향 검증 ----
+        # ---- 디버그: rod tip 의 tcp ROD_AXIS 방향 검증 ----
         first_tip = densified[0]
         tip_p = np.array([first_tip.position.x, first_tip.position.y, first_tip.position.z])
         local_axis_in_world = self._local_axis_in_world(
-            first_tip.orientation, TORCH_MOUNT_AXIS)
+            first_tip.orientation, ROD_AXIS)
         self.get_logger().info(
-            f"[CHECK] brush_tip=({tip_p[0]:.3f},{tip_p[1]:.3f},{tip_p[2]:.3f}) | "
-            f"tcp local{TORCH_MOUNT_AXIS} in world=({local_axis_in_world[0]:+.2f},"
+            f"[CHECK] rod_tip=({tip_p[0]:.3f},{tip_p[1]:.3f},{tip_p[2]:.3f}) | "
+            f"tcp local{ROD_AXIS} in world=({local_axis_in_world[0]:+.2f},"
             f"{local_axis_in_world[1]:+.2f},{local_axis_in_world[2]:+.2f}) "
             f"[기대: -normal=({brush_dir_world[0]:+.2f},"
             f"{brush_dir_world[1]:+.2f},{brush_dir_world[2]:+.2f})]")
