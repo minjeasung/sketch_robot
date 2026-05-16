@@ -22,6 +22,9 @@ setup(
             'joint_calibrator = sketch_control.joint_calibrator:main',
             'weld_visualizer = sketch_control.weld_visualizer:main',
             'publish_test_waypoint = sketch_control.publish_test_waypoint:main',
+            'wall_detector = sketch_control.wall_detector_node:main',
+            'wall_projector = sketch_control.wall_projector_node:main',
+            'sketch_to_waypoints = sketch_control.sketch_to_waypoints_node:main',
         ],
     },
 )

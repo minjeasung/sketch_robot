@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>sketch_robot — rosbridge 연결 검증</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/roslib@1.4.1/build/roslib.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>sketch_robot UI — B2 (rosbridge 연결 검증)</h1>
+    <div id="status" class="status connecting">
+      <span class="dot"></span>
+      <span id="status-text">connecting…</span>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2>connection</h2>
+    <div class="row">
+      <span class="label">URL</span>
+      <span id="ws-url" class="value">ws://localhost:9090</span>
+    </div>
+    <div class="row">
+      <span class="label">events</span>
+      <pre id="events" class="value events"></pre>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 id="view-card-title">ZED LEFT CAMERA <span id="view-card-topic" class="muted">(/zed/zed_node/left/image_rect_color, sensor_msgs/Image)</span></h2>
+
+    <div class="sketch-controls">
+      <div class="mode-group" title="View Mode">
+        <label><input type="radio" name="view-mode" value="zed_raw" checked /> ZED Raw</label>
+        <label><input type="radio" name="view-mode" value="wall_front" /> Wall Front</label>
+      </div>
+    </div>
+
+    <div id="zed-wrap" class="zed-wrap">
+      <canvas id="zed-canvas" width="1280" height="720"></canvas>
+      <canvas id="sketch-canvas" width="1280" height="720"></canvas>
+    </div>
+
+    <div class="sketch-controls">
+      <div class="mode-group" title="Sketch Mode">
+        <label><input type="radio" name="sketch-mode" value="freehand" checked /> Freehand</label>
+        <label><input type="radio" name="sketch-mode" value="line" /> Line</label>
+      </div>
+      <button id="btn-undo">Undo</button>
+      <button id="btn-clear">Clear</button>
+      <button id="btn-execute" class="primary" disabled>Execute</button>
+      <span class="muted" style="font-size:12px">Line 모드 중 ESC: 진행 중 line 취소</span>
+    </div>
+
+    <div class="row">
+      <span class="label">view</span>
+      <span id="view-mode-text" class="value">zed_raw</span>
+    </div>
+    <div class="row">
+      <span class="label">sketch mode</span>
+      <span id="sketch-mode-text" class="value">freehand</span>
+    </div>
+    <div class="row">
+      <span class="label">strokes</span>
+      <span id="sketch-strokes-count" class="value">0</span>
+    </div>
+    <div class="row">
+      <span class="label">points (total)</span>
+      <span id="sketch-points-count" class="value">0</span>
+    </div>
+
+    <div class="row">
+      <span class="label">resolution</span>
+      <span id="zed-res" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">encoding</span>
+      <span id="zed-encoding" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">frame count</span>
+      <span id="zed-frames" class="value">0</span>
+    </div>
+    <div class="row">
+      <span class="label">fps (last 1s)</span>
+      <span id="zed-fps" class="value">—</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>/perception/wall_plane <span class="muted">(geometry_msgs/PoseStamped)</span></h2>
+    <div class="row">
+      <span class="label">frame_id</span>
+      <span id="frame-id" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">stamp</span>
+      <span id="stamp" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">position (x, y, z)</span>
+      <span id="position" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">orientation (x, y, z, w)</span>
+      <span id="orientation" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">message count</span>
+      <span id="msg-count" class="value">0</span>
+    </div>
+  </section>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
