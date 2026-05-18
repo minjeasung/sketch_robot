@@ -24,7 +24,8 @@
 | 1 | Python sketch_ui (tkinter) + Isaac Sim 검증, MoveIt 2-stage approach | ✓ 완료 |
 | 2 | Unity SketchManager.cs 인터페이스로 교체, ROS-TCP-Connector | ✓ 완료 |
 | 3 | MoveIt 충돌 회피 안정화 (4-stage + Stage 5 복귀) | ◐ 부분 완료, wall 등록 이슈 보류 |
-| 4 | 실로봇 (RB10-1300) + ZED 통합 (Phase 4, 5 합침). URDF/MoveIt 재셋업, ZED 인식, hand-eye calib, 통합 동작 | ◐ 진행 중 |
+| 4 | RB10 + ZED 통합 (시뮬 검증) | ✓ Session 5 완료 (시뮬 검증) |
+| 5 | 실로봇 (snucem) 연결 + 검증 | □ 다음 |
 
 ### Phase 4 진행 현황 (2026-05-12 기준)
 
@@ -305,6 +306,55 @@ ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"
 - objects.yaml: wall/table/철판/막대/카메라/롤러 collision 등록
 - ZED 통합 시작 (perception/ransac_multiplane.py 활용)
 - 실로봇 토치/롤러 마운팅 (실로봇 작업 가능해지면)
+
+### Phase 4 Session 5 추가 완료 (2026-05-15 ~ 16)
+
+**ZED stereo + perception pipeline 완성 (시뮬 컴):**
+- Isaac Sim 의 ZED stereo (left + right) 카메라, 6 ROS topic 발행
+  (`/zed/zed_node/left/image_rect_color`, `right/image_rect_color`, 각 `camera_info`,
+   `depth/depth_registered`, `point_cloud/cloud_registered`)
+- `wall_detector_node`: ZED pointcloud → RANSAC (`segment_plane`, distance crop 2m) →
+  `/perception/wall_plane` (PoseStamped, normal=+Z)
+- `wall_projector_node`: ZED RGB + wall_plane → 정면 가상 view (homography) →
+  `/perception/wall_front_view` (800×800 rgb8)
+- `sketch_to_waypoints_node`: 브라우저 sketch (정면 view 픽셀) → world 3D waypoints
+  (`/sketch_waypoints` PoseArray)
+
+**브라우저 sketch UI (`web/`) 신설:**
+- rosbridge_websocket (`:9090`) 통한 ROS 통신 (roslibjs 1.4.1)
+- ZED RGB canvas 위에 sketch overlay (두 canvas 겹침)
+- Freehand + Line 그리기, Clear/Undo, ESC 취소
+- Wall Front 모드 (벽 정면 가상 view 위에 그림)
+- Execute (`/sketch_pixels`) + Run Robot (`/sketch_execute`) 버튼
+
+**moveit_executor 새 perception 흐름 통합:**
+- yaml 기반 표면 스냅 비활성 (`_compute_snapped_tcp_waypoints`, `plan_cartesian`) →
+  `sketch_to_waypoints` 좌표 그대로 사용
+- 작업 영역 0.6m × 0.6m
+- EOAT 벽 표면 offset 2cm (안전)
+- Stage 2 cartesian threshold 0.85 (95% → 85% 완화)
+
+**검증:** 브라우저 sketch → Stage 1~5 동작, EOAT 벽 뚫지 않음.
+자세 상세는 `docs/phase4_session5_perception_sketch_ui.md`.
+
+**주요 commit:** fdafea2 (Session 5 핵심), 6a87315, bd9a3ff.
+
+---
+
+## Phase 5: 실로봇 (snucem) 연결 + 검증 — 다음 세션
+
+**목표:** 시뮬에서 검증된 흐름 (Session 5) 을 실로봇에 그대로 적용.
+
+**작업 분해:**
+- snucem 에 sketch_robot_ws 복제 + build (rbpodo_ros2 fork 도 동일 commit)
+- 실 ZED 2i 카메라 연결 + ZED ros2 wrapper (`/zed/zed_node/*` 토픽 발행)
+- 실 환경 측정 (벽 위치, ZED 위치) 반영 — `docs/phase4_session4_environment.md`
+  의 측정값을 실 환경과 대조
+- 시뮬에서 검증된 흐름 (wall_detector → wall_projector → sketch UI →
+  sketch_to_waypoints → moveit_executor) 그대로 실로봇 적용
+- 안전 검증: 속도 제한 (0.1×), 단계적 검증 (Stage 1 단독 → Stage 1~2 → 전체)
+
+**ROS_DOMAIN_ID 분리:** 시뮬 컴 = 11, snucem = 다른 값 (충돌 방지).
 
 ---
 
