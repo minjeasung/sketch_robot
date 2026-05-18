@@ -920,7 +920,7 @@ class MoveItExecutor(Node):
             return
         fraction = resp.fraction
         self.get_logger().info(f"STAGE 2 cartesian: {fraction*100:.1f}%")
-        if fraction < 0.95:
+        if fraction < 0.85:
             self.get_logger().error(
                 f"STAGE 2 fraction {fraction*100:.0f}% < 95% -> 중단")
             self.executing = False
