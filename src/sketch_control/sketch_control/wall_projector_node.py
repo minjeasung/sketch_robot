@@ -39,8 +39,8 @@ OUTPUT_TOPIC = "/perception/wall_front_view"
 OUTPUT_W = 800   # 가상 정면 view 픽셀
 OUTPUT_H = 800
 
-WALL_RECT_W = 1.0  # 벽 평면 위 작업 영역 (m)
-WALL_RECT_H = 1.0
+WALL_RECT_W = 0.6  # 벽 평면 위 작업 영역 (m)
+WALL_RECT_H = 0.6
 
 
 def _quat_z_axis(q):

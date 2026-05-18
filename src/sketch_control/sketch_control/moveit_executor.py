@@ -710,29 +710,21 @@ class MoveItExecutor(Node):
         return c
 
     def _compute_snapped_tcp_waypoints(self):
-        """current_waypoints 를 표면 스냅 + densify + tcp 변환한 결과 반환.
-        Stage 2/3 양쪽이 같은 변환 결과를 써야 일관됨.
+        """current_waypoints 를 densify + tcp 변환한 결과 반환.
+        새 perception 흐름: sketch_to_waypoints_node 가 이미 wall_plane 좌표 + offset
+        적용 후 보냄 → yaml 기반 snap 불필요. waypoint 그대로 사용.
+        target/n 은 caller 호환을 위해 yaml 에서 계속 반환 (offset_along_normal 에서 사용).
         Returns: (snapped_tip_wps, tcp_wps, target, n)
         """
         target = get_target(self.cfg, self.active_target_name)
-        sp, n = get_surface_plane(target)
-        fixed_q = ee_quat_for_target(target)
-        snapped = []
-        for wp in self.current_waypoints:
-            p = np.array([wp.position.x, wp.position.y, wp.position.z])
-            delta = float(np.dot(p - sp, n))
-            projected = p - delta * n - n * BRUSH_PRESS_DEPTH
-            sw = copy.deepcopy(wp)
-            sw.position.x = float(projected[0])
-            sw.position.y = float(projected[1])
-            sw.position.z = float(projected[2])
-            sw.orientation.x = float(fixed_q[0])
-            sw.orientation.y = float(fixed_q[1])
-            sw.orientation.z = float(fixed_q[2])
-            sw.orientation.w = float(fixed_q[3])
-            snapped.append(sw)
+        _sp, n = get_surface_plane(target)
+        snapped = [copy.deepcopy(wp) for wp in self.current_waypoints]
         densified = self._densify_waypoints(snapped, spacing_m=0.005)
         tcp_wps = [self._brush_tip_to_tcp(wp) for wp in densified]
+        self.get_logger().info(
+            f"표면 스냅 SKIP (새 perception 흐름): N={len(snapped)} "
+            f"첫점=({snapped[0].position.x:.3f},{snapped[0].position.y:.3f},"
+            f"{snapped[0].position.z:.3f})")
         return densified, tcp_wps, target, n
 
     # ---- Stage 1: free-space approach via MoveGroup action -------------------
@@ -1008,27 +1000,14 @@ class MoveItExecutor(Node):
             self.get_logger().error("/compute_cartesian_path 서비스 없음")
             return
 
-        # 표면 스냅: 모든 waypoint 를 active target 의 평면 위로 투영 후 -depth 만큼 침투
+        # 새 perception 흐름: sketch_to_waypoints_node 가 이미 wall_plane 좌표 + offset
+        # 적용 후 보냄 → yaml 기반 snap/orientation 강제 불필요. waypoint 그대로 사용.
+        # target/n 은 OrientationConstraint 계산을 위해 아래에서 계속 yaml 에서 받음.
         target = get_target(self.cfg, self.active_target_name)
-        sp, n = get_surface_plane(target)
-        fixed_q = ee_quat_for_target(target)
-        snapped = []
-        for wp in self.current_waypoints:
-            p = np.array([wp.position.x, wp.position.y, wp.position.z])
-            delta = float(np.dot(p - sp, n))
-            projected = p - delta * n - n * BRUSH_PRESS_DEPTH
-            sw = copy.deepcopy(wp)
-            sw.position.x = float(projected[0])
-            sw.position.y = float(projected[1])
-            sw.position.z = float(projected[2])
-            # orientation 을 face 기반으로 강제 (sketch_ui 값과 동일해야 함)
-            sw.orientation.x = float(fixed_q[0])
-            sw.orientation.y = float(fixed_q[1])
-            sw.orientation.z = float(fixed_q[2])
-            sw.orientation.w = float(fixed_q[3])
-            snapped.append(sw)
+        _sp, n = get_surface_plane(target)
+        snapped = [copy.deepcopy(wp) for wp in self.current_waypoints]
         self.get_logger().info(
-            f"표면 스냅: target={self.active_target_name} normal={n} "
+            f"표면 스냅 SKIP (새 perception 흐름): N={len(snapped)} "
             f"첫점=({snapped[0].position.x:.3f},{snapped[0].position.y:.3f},"
             f"{snapped[0].position.z:.3f})")
 

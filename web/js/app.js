@@ -398,11 +398,18 @@ $("btn-undo").addEventListener("click", () => {
 
 // ---- Execute: 현재 view 의 모든 strokes 의 point 들을 PoseArray 로 publish ----
 const SKETCH_PIXELS_TOPIC = "/sketch_pixels";
+const SKETCH_EXECUTE_TOPIC = "/sketch_execute";
 const sketchPub = new ROSLIB.Topic({
   ros: ros,
   name: SKETCH_PIXELS_TOPIC,
   messageType: "geometry_msgs/PoseArray",
 });
+const sketchExecutePub = new ROSLIB.Topic({
+  ros: ros,
+  name: SKETCH_EXECUTE_TOPIC,
+  messageType: "std_msgs/Bool",
+});
+let hasExecuted = false;  // Execute 한 번 이상 → Run Robot 활성화
 
 function nowRosTime() {
   const ms = Date.now();
@@ -435,6 +442,25 @@ $("btn-execute").addEventListener("click", () => {
   });
   sketchPub.publish(msg);
   logEvent(`published ${poses.length} points to ${SKETCH_PIXELS_TOPIC} (view=${currentView})`);
+
+  // 첫 publish 후부터 Run Robot 활성화
+  if (!hasExecuted) {
+    hasExecuted = true;
+    const runBtn = $("btn-run-robot");
+    if (runBtn) runBtn.disabled = false;
+  }
+});
+
+// ---- Run Robot: confirm 후 /sketch_execute Bool(true) publish ----
+$("btn-run-robot").addEventListener("click", () => {
+  if (!hasExecuted) return;
+  const ok = window.confirm("정말 실행? RB10 이 움직입니다.");
+  if (!ok) {
+    logEvent("Run Robot cancelled by user");
+    return;
+  }
+  sketchExecutePub.publish(new ROSLIB.Message({ data: true }));
+  logEvent(`published ${SKETCH_EXECUTE_TOPIC} (RB10 will move)`);
 });
 
 updateSketchStats();

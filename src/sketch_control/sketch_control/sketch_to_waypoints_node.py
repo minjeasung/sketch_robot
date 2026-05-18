@@ -29,22 +29,28 @@ from rclpy.time import Time
 from scipy.spatial.transform import Rotation as R
 
 from tf2_ros import Buffer, TransformListener, TransformException
-from geometry_msgs.msg import Pose, PoseArray, PoseStamped
+from geometry_msgs.msg import Pose, PoseArray, PoseStamped, Point
+from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 # ---- 파라미터 ----------------------------------------------------------------
 SKETCH_PIXELS_TOPIC = "/sketch_pixels"
 WALL_PLANE_TOPIC = "/perception/wall_plane"
 WAYPOINTS_TOPIC = "/sketch_waypoints"
+MARKERS_TOPIC = "/sketch_markers"
 
 WORLD_FRAME = "World"
 CAM_FRAME = "zed_left_camera_frame"
 
 # wall_projector_node 와 일치해야 함 (벽 평면 영역 + 가상 view 해상도)
-WALL_W = 1.0     # m
-WALL_H = 1.0     # m
+WALL_W = 0.6     # m
+WALL_H = 0.6     # m
 VIEW_W = 800     # px
 VIEW_H = 800     # px
+
+# EOAT 가 벽 표면으로 살짝 떨어진 위치 — 표면 접촉 회피 / 안전 margin.
+EOAT_SURFACE_OFFSET = -0.020  # m
 
 
 def _quat_to_rot(qx, qy, qz, qw):
@@ -84,12 +90,16 @@ class SketchToWaypointsNode(Node):
         self.create_subscription(
             PoseArray, SKETCH_PIXELS_TOPIC, self._on_sketch, 10)
         self.pub = self.create_publisher(PoseArray, WAYPOINTS_TOPIC, 10)
+        # latch-like: RViz 가 늦게 켜져도 마지막 marker 보이게 transient_local 도 좋지만
+        # 매 sketch 마다 갱신하므로 일반 10 depth 로 충분.
+        self.marker_pub = self.create_publisher(MarkerArray, MARKERS_TOPIC, 10)
 
         self.get_logger().info(
             f"sketch_to_waypoints_node 시작\n"
             f"  wall  : {WALL_PLANE_TOPIC}\n"
             f"  sketch: {SKETCH_PIXELS_TOPIC}\n"
             f"  out   : {WAYPOINTS_TOPIC} (frame={WORLD_FRAME})\n"
+            f"          {MARKERS_TOPIC} (MarkerArray, 같은 frame)\n"
             f"  wall rect {WALL_W}×{WALL_H} m ↔ view {VIEW_W}×{VIEW_H} px")
 
     # ---- callbacks ----
@@ -160,13 +170,15 @@ class SketchToWaypointsNode(Node):
         out.header.stamp = self.get_clock().now().to_msg()
         out.header.frame_id = WORLD_FRAME
 
+        # EOAT 가 벽 표면에서 normal 방향으로 EOAT_SURFACE_OFFSET 만큼 떨어진 평면 위에 점.
+        surface_offset = normal_world * EOAT_SURFACE_OFFSET
         for p in msg.poses:
             u = float(p.position.x)
             v = float(p.position.y)
             x_plane = (u / VIEW_W - 0.5) * WALL_W
             y_plane = (v / VIEW_H - 0.5) * WALL_H
             # v 픽셀 ↓ = wall up axis 와 반대
-            p_world = cent_world + right * x_plane - up * y_plane
+            p_world = cent_world + surface_offset + right * x_plane - up * y_plane
 
             pose = Pose()
             pose.position.x = float(p_world[0])
@@ -179,6 +191,54 @@ class SketchToWaypointsNode(Node):
             out.poses.append(pose)
 
         self.pub.publish(out)
+
+        # ---- MarkerArray (RViz 시각 검증) ----
+        marker_msg = MarkerArray()
+
+        # 0) 이전 marker 모두 삭제 (DELETEALL)
+        clear = Marker()
+        clear.header.frame_id = WORLD_FRAME
+        clear.header.stamp = out.header.stamp
+        clear.ns = "sketch"
+        clear.action = Marker.DELETEALL
+        marker_msg.markers.append(clear)
+
+        # 좌표 points (PoseArray 와 동일 순서)
+        pts = [Point(x=ps.position.x, y=ps.position.y, z=ps.position.z)
+               for ps in out.poses]
+
+        # 1) SPHERE_LIST — waypoint 위치 (cyan 점)
+        spheres = Marker()
+        spheres.header.frame_id = WORLD_FRAME
+        spheres.header.stamp = out.header.stamp
+        spheres.ns = "sketch"
+        spheres.id = 0
+        spheres.type = Marker.SPHERE_LIST
+        spheres.action = Marker.ADD
+        spheres.pose.orientation.w = 1.0
+        spheres.scale.x = 0.02
+        spheres.scale.y = 0.02
+        spheres.scale.z = 0.02
+        spheres.color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=1.0)  # cyan
+        spheres.points = pts
+        marker_msg.markers.append(spheres)
+
+        # 2) LINE_STRIP — waypoint 연결선 (yellow)
+        line = Marker()
+        line.header.frame_id = WORLD_FRAME
+        line.header.stamp = out.header.stamp
+        line.ns = "sketch"
+        line.id = 1
+        line.type = Marker.LINE_STRIP
+        line.action = Marker.ADD
+        line.pose.orientation.w = 1.0
+        line.scale.x = 0.005  # LINE_STRIP: x = 두께
+        line.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)  # yellow
+        line.points = pts
+        marker_msg.markers.append(line)
+
+        self.marker_pub.publish(marker_msg)
+
         self.get_logger().info(
             f"{len(out.poses)} waypoints published "
             f"(view={view}, centroid_world="
