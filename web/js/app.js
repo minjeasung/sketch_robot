@@ -3,7 +3,7 @@
 
 const WS_URL = "ws://localhost:9090";
 const WALL_PLANE_TOPIC = "/perception/wall_plane";
-const ZED_LEFT_IMAGE_TOPIC = "/zed/zed_node/left/image_rect_color";
+const ZED_LEFT_IMAGE_TOPIC = "/zed/zed_node/rgb/color/rect/image";
 
 const $ = (id) => document.getElementById(id);
 
@@ -76,7 +76,7 @@ logEvent(`subscribed to ${WALL_PLANE_TOPIC}`);
 // ---- View mode (ZED Raw / Wall Front) + image subscriber ----
 // 두 view 의 sketch strokes 는 의미가 다름 (원본 카메라 픽셀 vs 벽 평면 픽셀) → 분리 보관.
 const VIEW_TOPICS = {
-  zed_raw:    "/zed/zed_node/left/image_rect_color",
+  zed_raw:    "/zed/zed_node/rgb/color/rect/image",
   wall_front: "/perception/wall_front_view",
 };
 const VIEW_TITLES = {
@@ -110,6 +110,13 @@ function decodeImageData(msg) {
     }
   } else if (msg.encoding === "bgr8") {
     for (let i = 0; i < bin.length; i += 3) {
+      buf[j++] = bin.charCodeAt(i + 2);
+      buf[j++] = bin.charCodeAt(i + 1);
+      buf[j++] = bin.charCodeAt(i);
+      buf[j++] = 255;
+    }
+  } else if (msg.encoding === "bgra8") {
+    for (let i = 0; i < bin.length; i += 4) {
       buf[j++] = bin.charCodeAt(i + 2);
       buf[j++] = bin.charCodeAt(i + 1);
       buf[j++] = bin.charCodeAt(i);

@@ -2,8 +2,8 @@
 wall_projector_node — ZED RGB + 검출된 wall_plane → 벽 정면 가상 view 생성.
 
 입력:
-  /zed/zed_node/left/image_rect_color  (sensor_msgs/Image, rgb8 | bgr8)
-  /zed/zed_node/left/camera_info       (sensor_msgs/CameraInfo)  — K 매트릭스
+  /zed/zed_node/rgb/color/rect/image  (sensor_msgs/Image, rgb8 | bgr8)
+  /zed/zed_node/rgb/color/rect/camera_info       (sensor_msgs/CameraInfo)  — K 매트릭스
   /perception/wall_plane               (geometry_msgs/PoseStamped)
                                         — pose.position = wall centroid
                                         — pose.orientation = +Z 가 wall normal
@@ -31,8 +31,8 @@ from sensor_msgs.msg import Image, CameraInfo
 
 
 # ---- 파라미터 ----------------------------------------------------------------
-INPUT_IMAGE_TOPIC = "/zed/zed_node/left/image_rect_color"
-INPUT_INFO_TOPIC = "/zed/zed_node/left/camera_info"
+INPUT_IMAGE_TOPIC = "/zed/zed_node/rgb/color/rect/image"
+INPUT_INFO_TOPIC = "/zed/zed_node/rgb/color/rect/camera_info"
 INPUT_WALL_TOPIC = "/perception/wall_plane"
 OUTPUT_TOPIC = "/perception/wall_front_view"
 
@@ -59,6 +59,10 @@ def _decode_image(msg):
     arr = np.frombuffer(msg.data, dtype=np.uint8)
     if msg.encoding == "rgb8":
         return arr.reshape(h, w, 3).copy()
+    if msg.encoding == "bgra8":
+        return cv2.cvtColor(arr.reshape(h, w, 4), cv2.COLOR_BGRA2RGB)
+    if msg.encoding == "rgba8":
+        return arr.reshape(h, w, 4)[:, :, :3].copy()
     if msg.encoding == "bgr8":
         return cv2.cvtColor(arr.reshape(h, w, 3), cv2.COLOR_BGR2RGB)
     raise ValueError(f"unsupported encoding: {msg.encoding}")
@@ -115,6 +119,15 @@ class WallProjectorNode(Node):
         if n_norm < 1e-6:
             return
         normal = normal / n_norm
+        # zed_left_camera_frame (X-fwd) → zed_left_camera_frame_optical (Z-fwd) 변환
+        # optical.x = -frame.y, optical.y = -frame.z, optical.z = +frame.x
+        R_frame_to_optical = np.array([
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [1.0, 0.0, 0.0],
+        ])
+        centroid = R_frame_to_optical @ centroid
+        normal = R_frame_to_optical @ normal
         self.latest_wall = (
             centroid, normal,
             msg.header.frame_id or "zed_left_camera_frame",

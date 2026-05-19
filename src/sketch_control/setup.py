@@ -25,6 +25,7 @@ setup(
             'wall_detector = sketch_control.wall_detector_node:main',
             'wall_projector = sketch_control.wall_projector_node:main',
             'sketch_to_waypoints = sketch_control.sketch_to_waypoints_node:main',
+            'environment_scanner = sketch_control.environment_scanner_node:main',
         ],
     },
 )
