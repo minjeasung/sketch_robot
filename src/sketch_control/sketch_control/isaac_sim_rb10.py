@@ -24,7 +24,7 @@ import time as _time
 import omni
 import omni.kit.app
 import omni.graph.core as og
-from pxr import UsdGeom, UsdPhysics, Gf, Sdf
+from pxr import UsdGeom, UsdPhysics, Gf, Sdf, Usd
 import usdrt.Sdf
 
 # ---- ROS2 bridge enable -------------------------------------------------------
@@ -200,49 +200,62 @@ world.scene.add(VisualCuboid(
 print(f"[OK] 카메라 마운트 세그먼트2 (수직): "
       f"center={MOUNT_SEG2_CENTER.tolist()} size={MOUNT_SEG2_SIZE.tolist()}")
 
-# ---- ZED 카메라 prim (Step 4) -------------------------------------------------
-# 위치: (0.2, 0.5, 0.915) — 세그먼트2 윗면 (z=0.89) + 카메라 cube 절반 (0.025).
-# 방향: 벽 향함. target = 벽 표면 중앙 (0, -0.78, 0.5).
+# ---- 초기화 -------------------------------------------------------------------
+world.reset()
+
+# ---- ZED 카메라 (zed-isaac-sim 의 ZED_X.usdc reference) -----------------------
+# 가짜 USD Camera 들 (body/optical 분리) 대신 zed-isaac-sim 공식 ZED X USD 사용.
+# 내부에 base_link (REP 103) → ZED_X → CameraLeft / CameraRight 구조 + sl.sensor.camera
+# ZED_Camera Helper OmniGraph 노드로 발행 (zed-ros2-wrapper sim_mode 와 통합).
+#
+# 위치: world.reset() 다음. 이유 — reset 전에 USD reference 로 새 rigid body 가 추가되면
+# Robot articulation 의 simulation view 가 invalidate 되어 무한 에러 → Isaac Sim crash.
 CAMERA_PATH = "/World/SketchCamera"
 CAMERA_EYE = Gf.Vec3d(0.2, 0.5, 0.915)
 CAMERA_TARGET = Gf.Vec3d(0.0, -0.78, 0.5)
+ZED_X_USD_PATH = (
+    "/home/minjea/sketch_robot_ws/zed-isaac-sim/"
+    "exts/sl.sensor.camera/data/usd/ZED_X.usdc"
+)
 
-cam_prim = UsdGeom.Camera.Define(stage, CAMERA_PATH)
-cam_prim.GetFocalLengthAttr().Set(8.4)
-cam_prim.GetHorizontalApertureAttr().Set(24.0)
-cam_xform = UsdGeom.Xformable(cam_prim.GetPrim())
+# CAMERA_PATH 를 Xform 으로 만들고 ZED_X.usdc 를 reference. defaultPrim 이 child 가 됨.
+zed_carrier = UsdGeom.Xform.Define(stage, CAMERA_PATH)
+zed_carrier.GetPrim().GetReferences().AddReference(ZED_X_USD_PATH)
 
+# ZED X USD 안의 rigid body 들 kinematic 으로 — 중력 무시, transform 으로만 제어.
+# (kinematic 안 하면 PhysX 가 중력 적용해서 받침대에서 떨어짐.)
+_kinematic_count = 0
+for _descendant in Usd.PrimRange(zed_carrier.GetPrim()):
+    if _descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+        _rb_api = UsdPhysics.RigidBodyAPI(_descendant)
+        _rb_api.GetKinematicEnabledAttr().Set(True)
+        _kinematic_count += 1
+print(f"[OK] ZED X rigid body kinematic: {_kinematic_count} prim — 받침대 고정")
 
-# USD Camera convention: local +X=right, +Y=up, -Z=forward (OpenGL).
-# Gf.Matrix4d 의 row/col convention 의 모호성으로 직접 행렬 구성 시 여러 시도 모두 실패.
-# scipy 로 회전 행렬 → quaternion 명시 계산 후 Translate + Orient Op 으로 적용.
 from scipy.spatial.transform import Rotation as _R
 
 
-def _look_at_quaternion(eye, target, up_axis=(0.0, 0.0, 1.0)):
-    """eye→target 을 바라보는 USD Camera 의 world orientation.
-    반환: Gf.Quatf(w, x, y, z) — AddOrientOp 와 호환."""
+def _body_look_at_quaternion(eye, target, up_axis=(0.0, 0.0, 1.0)):
+    """REP 103 body convention (+X=fwd, +Y=left, +Z=up) 의 +X 가 target 향하도록.
+    반환: Gf.Quatf(w, x, y, z)."""
     eye_np = np.array([eye[0], eye[1], eye[2]], dtype=float)
     target_np = np.array([target[0], target[1], target[2]], dtype=float)
     fwd = target_np - eye_np
     fwd /= np.linalg.norm(fwd)
-    right = np.cross(fwd, np.asarray(up_axis, dtype=float))
-    right /= np.linalg.norm(right)
-    new_up = np.cross(right, fwd)
-    # 회전 행렬 (columns = local basis vectors in world frame):
-    #   local +X = right, local +Y = up, local +Z = -forward (Camera 의 -Z 가 forward)
-    R_mat = np.column_stack([right, new_up, -fwd])
+    up = np.asarray(up_axis, dtype=float)
+    left = np.cross(up, fwd)
+    left /= np.linalg.norm(left)
+    new_up = np.cross(fwd, left)
+    # columns = body basis (X=fwd, Y=left, Z=up) in world frame.
+    R_mat = np.column_stack([fwd, left, new_up])
     qx, qy, qz, qw = _R.from_matrix(R_mat).as_quat()
     return Gf.Quatf(float(qw), float(qx), float(qy), float(qz))
 
 
-for _op in cam_xform.GetOrderedXformOps():
-    cam_xform.GetPrim().RemoveProperty(_op.GetOpName())
-# 통합된 transform: 회전 + 평행이동을 단일 4x4 행렬로.
-# 두 op (Orient + Translate) 분리 시 frame 간섭으로 tf 위치 어긋나는 문제 → 한 op 로
-# 합쳐서 모호성 제거. SetRotateOnly + SetTranslateOnly 는 행렬의 독립 부분이라 순서 무관.
-_q = _look_at_quaternion(CAMERA_EYE, CAMERA_TARGET)
-# Gf.Rotation 은 Gf.Quatd 를 받음 → Quatf → Quatd 명시 변환.
+zed_xf = UsdGeom.Xformable(zed_carrier.GetPrim())
+for _op in zed_xf.GetOrderedXformOps():
+    zed_xf.GetPrim().RemoveProperty(_op.GetOpName())
+_q = _body_look_at_quaternion(CAMERA_EYE, CAMERA_TARGET)
 _qd = Gf.Quatd(float(_q.real),
                float(_q.imaginary[0]),
                float(_q.imaginary[1]),
@@ -250,44 +263,13 @@ _qd = Gf.Quatd(float(_q.real),
 _M = Gf.Matrix4d(1.0)
 _M.SetRotateOnly(Gf.Rotation(_qd))
 _M.SetTranslateOnly(Gf.Vec3d(CAMERA_EYE[0], CAMERA_EYE[1], CAMERA_EYE[2]))
-cam_xform.AddTransformOp().Set(_M)
-print(f"[OK] ZED 카메라 prim: {CAMERA_PATH} eye=(0.2,0.5,0.915) → target=(0,-0.78,0.5)")
+zed_xf.AddTransformOp().Set(_M)
+print(f"[OK] ZED X USD reference: {CAMERA_PATH}")
+print(f"     eye={tuple(CAMERA_EYE)} → target={tuple(CAMERA_TARGET)}")
 
-# ---- ZED stereo (left/right child Camera prim) -------------------------------
-# baseline 120mm (ZED 2i 스펙). USD Camera default frame: +X right, +Y up, -Z forward.
-# child path 의 prim 이름 = TF link 이름 (zed_left_camera_frame / zed_right_camera_frame)
-ZED_BASELINE = 0.120
-ZED_IMAGE_W = 1280
-ZED_IMAGE_H = 720
-LEFT_CAMERA_PATH = CAMERA_PATH + "/zed_left_camera_frame"
-RIGHT_CAMERA_PATH = CAMERA_PATH + "/zed_right_camera_frame"
-
-for _path, _local_x in [(LEFT_CAMERA_PATH, -ZED_BASELINE / 2.0),
-                         (RIGHT_CAMERA_PATH, +ZED_BASELINE / 2.0)]:
-    _c = UsdGeom.Camera.Define(stage, _path)
-    _c.GetFocalLengthAttr().Set(8.4)
-    _c.GetHorizontalApertureAttr().Set(24.0)
-    _xf = UsdGeom.Xformable(_c.GetPrim())
-    for _op in _xf.GetOrderedXformOps():
-        _xf.GetPrim().RemoveProperty(_op.GetOpName())
-    _xf.AddTranslateOp().Set(Gf.Vec3d(_local_x, 0.0, 0.0))
-print(f"[OK] ZED stereo: {LEFT_CAMERA_PATH} ({-ZED_BASELINE/2:+.3f}m X) | "
-      f"{RIGHT_CAMERA_PATH} ({+ZED_BASELINE/2:+.3f}m X)")
-
-# 시각 marker — Camera prim 은 viewport 에서 아이콘으로만 보임.
-# ZED2 실제 dimension (~175×30×33mm) 박스로 위치 확인 가능하게.
-ZED_CASE_SIZE = np.array([0.1753, 0.0303, 0.0431])
-world.scene.add(VisualCuboid(
-    prim_path="/World/SketchCameraCase",
-    name="sketch_camera_case",
-    position=np.array([CAMERA_EYE[0], CAMERA_EYE[1], CAMERA_EYE[2]]),
-    scale=ZED_CASE_SIZE,
-    color=np.array([0.08, 0.08, 0.08]),  # 검은색 (ZED 케이스)
-))
-print(f"[OK] ZED 케이스 marker: pos=(0.2,0.5,0.915) size={ZED_CASE_SIZE.tolist()}")
-
-# ---- 초기화 -------------------------------------------------------------------
-world.reset()
+# CameraHelper 가 참조할 left/right camera prim path (ZED_X USD 내부 구조)
+LEFT_CAMERA_PATH = CAMERA_PATH + "/base_link/ZED_X/CameraLeft"
+RIGHT_CAMERA_PATH = CAMERA_PATH + "/base_link/ZED_X/CameraRight"
 
 try:
     _dofs = robot.num_dof
@@ -459,12 +441,7 @@ NT_ARTIC_CTRL = _node_type("isaacsim.core.nodes.IsaacArticulationController",
                             "omni.isaac.core_nodes.IsaacArticulationController")
 NT_PUB_CLOCK = _node_type("isaacsim.ros2.bridge.ROS2PublishClock",
                             "omni.isaac.ros2_bridge.ROS2PublishClock")
-NT_CREATE_RP = _node_type("isaacsim.core.nodes.IsaacCreateRenderProduct",
-                          "omni.isaac.core_nodes.IsaacCreateRenderProduct")
-NT_CAM = _node_type("isaacsim.ros2.bridge.ROS2CameraHelper",
-                     "omni.isaac.ros2_bridge.ROS2CameraHelper")
-NT_CAMINFO = _node_type("isaacsim.ros2.bridge.ROS2CameraInfoHelper",
-                         "omni.isaac.ros2_bridge.ROS2CameraInfoHelper")
+NT_ZED_CAMERA = "sl.sensor.camera.ZED_Camera"  # zed-isaac-sim extension 의 ZED Camera Helper
 
 keys = og.Controller.Keys
 
@@ -473,9 +450,7 @@ keys = og.Controller.Keys
 # PublishTransformTree 는 articulation root 를 받으면 그 하위 link 들을 자동 추적.
 _tf_targets = [
     Sdf.Path(ARTICULATION_PATH),
-    Sdf.Path(CAMERA_PATH),
-    Sdf.Path(LEFT_CAMERA_PATH),
-    Sdf.Path(RIGHT_CAMERA_PATH),
+    Sdf.Path(CAMERA_PATH),         # ZED X USD reference root — base_link/ZED_X/Camera* 자동
 ]
 if TCP_PRIM_PATH is not None:
     _tf_targets.append(Sdf.Path(TCP_PRIM_PATH))
@@ -547,70 +522,40 @@ og.Controller.edit(
         ],
     },
 )
-# ---- ZED CameraGraph (stereo RGB + camera_info + left depth + left pointcloud) -
-# topic 이름은 zed-ros-wrapper 의 표준과 일치 (실로봇 ↔ 시뮬 코드 공유).
+# ---- ZED Camera Helper (zed-isaac-sim 의 sl.sensor.camera ZED_Camera 노드) ----
+# zed-ros2-wrapper sim_mode 와 IPC 로 통신. wrapper 가 /zed/zed_node/* 발행.
 og.Controller.edit(
     {"graph_path": "/World/ZedCameraGraph", "evaluator_name": "execution"},
     {
         keys.CREATE_NODES: [
-            ("Tick", NT_TICK),
-            ("RpLeft", NT_CREATE_RP),
-            ("RpRight", NT_CREATE_RP),
-            ("LeftRgb", NT_CAM),
-            ("LeftInfo", NT_CAMINFO),
-            ("RightRgb", NT_CAM),
-            ("RightInfo", NT_CAMINFO),
-            ("LeftDepth", NT_CAM),
-            ("LeftPcl", NT_CAM),
+            ("OnTick", NT_TICK),
+            ("ZedHelper", NT_ZED_CAMERA),
         ],
         keys.CONNECT: [
-            ("Tick.outputs:tick", "RpLeft.inputs:execIn"),
-            ("Tick.outputs:tick", "RpRight.inputs:execIn"),
-            # render product → 각 helper 의 execIn + renderProductPath
-            ("RpLeft.outputs:execOut", "LeftRgb.inputs:execIn"),
-            ("RpLeft.outputs:execOut", "LeftInfo.inputs:execIn"),
-            ("RpLeft.outputs:execOut", "LeftDepth.inputs:execIn"),
-            ("RpLeft.outputs:execOut", "LeftPcl.inputs:execIn"),
-            ("RpRight.outputs:execOut", "RightRgb.inputs:execIn"),
-            ("RpRight.outputs:execOut", "RightInfo.inputs:execIn"),
-            ("RpLeft.outputs:renderProductPath", "LeftRgb.inputs:renderProductPath"),
-            ("RpLeft.outputs:renderProductPath", "LeftInfo.inputs:renderProductPath"),
-            ("RpLeft.outputs:renderProductPath", "LeftDepth.inputs:renderProductPath"),
-            ("RpLeft.outputs:renderProductPath", "LeftPcl.inputs:renderProductPath"),
-            ("RpRight.outputs:renderProductPath", "RightRgb.inputs:renderProductPath"),
-            ("RpRight.outputs:renderProductPath", "RightInfo.inputs:renderProductPath"),
+            ("OnTick.outputs:tick", "ZedHelper.inputs:execIn"),
         ],
         keys.SET_VALUES: [
-            # render product (left + right)
-            ("RpLeft.inputs:cameraPrim", [Sdf.Path(LEFT_CAMERA_PATH)]),
-            ("RpLeft.inputs:width", ZED_IMAGE_W),
-            ("RpLeft.inputs:height", ZED_IMAGE_H),
-            ("RpRight.inputs:cameraPrim", [Sdf.Path(RIGHT_CAMERA_PATH)]),
-            ("RpRight.inputs:width", ZED_IMAGE_W),
-            ("RpRight.inputs:height", ZED_IMAGE_H),
-            # left RGB + camera_info
-            ("LeftRgb.inputs:type", "rgb"),
-            ("LeftRgb.inputs:topicName", "/zed/zed_node/left/image_rect_color"),
-            ("LeftRgb.inputs:frameId", "zed_left_camera_frame"),
-            ("LeftInfo.inputs:topicName", "/zed/zed_node/left/camera_info"),
-            ("LeftInfo.inputs:frameId", "zed_left_camera_frame"),
-            # right RGB + camera_info
-            ("RightRgb.inputs:type", "rgb"),
-            ("RightRgb.inputs:topicName", "/zed/zed_node/right/image_rect_color"),
-            ("RightRgb.inputs:frameId", "zed_right_camera_frame"),
-            ("RightInfo.inputs:topicName", "/zed/zed_node/right/camera_info"),
-            ("RightInfo.inputs:frameId", "zed_right_camera_frame"),
-            # left depth (32FC1) + pointcloud (PointCloud2, depth_pcl helper)
-            ("LeftDepth.inputs:type", "depth"),
-            ("LeftDepth.inputs:topicName", "/zed/zed_node/depth/depth_registered"),
-            ("LeftDepth.inputs:frameId", "zed_left_camera_frame"),
-            ("LeftPcl.inputs:type", "depth_pcl"),
-            ("LeftPcl.inputs:topicName", "/zed/zed_node/point_cloud/cloud_registered"),
-            ("LeftPcl.inputs:frameId", "zed_left_camera_frame"),
+            ("ZedHelper.inputs:cameraModel", "ZED_X"),
+            # cameraPrim 은 USD relationship (target type) — SET_VALUES 로 안 됨. 아래서 별도 설정.
+            ("ZedHelper.inputs:streamingPort", 30000),
+            ("ZedHelper.inputs:transportLayerMode", "BOTH"),
         ],
     },
 )
+
+# ZedHelper 의 cameraPrim 은 OGN 의 type="target" (USD relationship). SET_VALUES 로
+# 안 잡혀서 Property 패널에 비어 보임 → wrapper sim_mode TIMEOUT. relationship API 로 직접.
+_zed_helper_path = "/World/ZedCameraGraph/ZedHelper"
+_zed_helper_prim = stage.GetPrimAtPath(_zed_helper_path)
+_cam_rel = _zed_helper_prim.GetRelationship("inputs:cameraPrim")
+if not _cam_rel:
+    _cam_rel = _zed_helper_prim.CreateRelationship("inputs:cameraPrim", custom=False)
+_cam_rel.SetTargets([Sdf.Path(CAMERA_PATH)])
+
 print("[OK] ROS2 OmniGraph: TFGraph + JointGraph + ClockGraph + ZedCameraGraph 생성")
+print(f"     ZED Camera Helper cameraPrim (relationship): {CAMERA_PATH}")
+print(f"     zed-ros2-wrapper sim_mode 로 연결:")
+print(f"       ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx sim_mode:=true")
 
 print("=" * 60)
 print("Isaac Sim RB10 씬 준비 완료 (Step 1~5 + EOAT)")
@@ -623,8 +568,6 @@ print(f"  Mount seg1:  center={MOUNT_SEG1_CENTER.tolist()} size={MOUNT_SEG1_SIZE
 print(f"  Mount seg2:  center={MOUNT_SEG2_CENTER.tolist()} size={MOUNT_SEG2_SIZE.tolist()}")
 print(f"  Roller:      tcp local +{ROLLER_AXIS} offset={ROLLER_OFFSET}m, Φ{ROLLER_RADIUS*2}m × {ROLLER_LENGTH}m")
 print(f"  ROS topics:  /joint_states, /joint_command, /tf, /clock,")
-print(f"               /zed/zed_node/{{left,right}}/{{image_rect_color,camera_info}},")
-print(f"               /zed/zed_node/depth/depth_registered,")
-print(f"               /zed/zed_node/point_cloud/cloud_registered")
+print(f"               /zed/zed_node/* (zed-ros2-wrapper sim_mode 에서 발행)")
 print(f"  READY_POSE 적용: 롤러가 -Y (벽) 향해야 정상")
 print("=" * 60)

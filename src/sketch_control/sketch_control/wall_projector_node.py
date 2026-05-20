@@ -119,15 +119,6 @@ class WallProjectorNode(Node):
         if n_norm < 1e-6:
             return
         normal = normal / n_norm
-        # zed_left_camera_frame (X-fwd) → zed_left_camera_frame_optical (Z-fwd) 변환
-        # optical.x = -frame.y, optical.y = -frame.z, optical.z = +frame.x
-        R_frame_to_optical = np.array([
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, -1.0],
-            [1.0, 0.0, 0.0],
-        ])
-        centroid = R_frame_to_optical @ centroid
-        normal = R_frame_to_optical @ normal
         self.latest_wall = (
             centroid, normal,
             msg.header.frame_id or "zed_left_camera_frame",
