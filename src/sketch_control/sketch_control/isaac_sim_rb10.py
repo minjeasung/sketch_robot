@@ -24,7 +24,7 @@ import time as _time
 import omni
 import omni.kit.app
 import omni.graph.core as og
-from pxr import UsdGeom, UsdPhysics, Gf, Sdf, Usd
+from pxr import UsdGeom, UsdPhysics, Gf, Sdf, Usd, PhysxSchema
 import usdrt.Sdf
 
 # ---- ROS2 bridge enable -------------------------------------------------------
@@ -228,9 +228,14 @@ _kinematic_count = 0
 for _descendant in Usd.PrimRange(zed_carrier.GetPrim()):
     if _descendant.HasAPI(UsdPhysics.RigidBodyAPI):
         _rb_api = UsdPhysics.RigidBodyAPI(_descendant)
-        _rb_api.GetKinematicEnabledAttr().Set(True)
+        _rb_api.GetKinematicEnabledAttr().Set(False)
+        _physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(_descendant)
+        _physx_rb.CreateDisableGravityAttr().Set(True)
         _kinematic_count += 1
 print(f"[OK] ZED X rigid body kinematic: {_kinematic_count} prim — 받침대 고정")
+
+
+
 
 from scipy.spatial.transform import Rotation as _R
 
@@ -538,7 +543,7 @@ og.Controller.edit(
             ("ZedHelper.inputs:cameraModel", "ZED_X"),
             # cameraPrim 은 USD relationship (target type) — SET_VALUES 로 안 됨. 아래서 별도 설정.
             ("ZedHelper.inputs:streamingPort", 30000),
-            ("ZedHelper.inputs:transportLayerMode", "BOTH"),
+            ("ZedHelper.inputs:transportLayerMode", "NETWORK"),
         ],
     },
 )
