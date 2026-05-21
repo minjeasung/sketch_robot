@@ -200,6 +200,38 @@ world.scene.add(VisualCuboid(
 print(f"[OK] 카메라 마운트 세그먼트2 (수직): "
       f"center={MOUNT_SEG2_CENTER.tolist()} size={MOUNT_SEG2_SIZE.tolist()}")
 
+# 카메라 mount: ball head + 1점 볼트 (실로봇 reference 사진과 1:1 일치).
+# 체인 — MountSeg2 top → ball head (sphere) → 볼트 (cylinder) → ZED 바닥.
+# 실 ZED X 는 보통 swivel head 로 부착, 1/4" 볼트 1점 → 시뮬도 동일 chain 으로
+# hand-eye calib 시 sim/real transform parameterization 일치.
+MOUNT_BALL_CENTER = np.array([0.2, 0.5, 0.92])      # Seg2 top (0.89) 위 +0.03m
+MOUNT_BALL_RADIUS = 0.025                            # Φ50mm
+_MOUNT_BALL_COLOR = (0.08, 0.08, 0.08)               # 검은 ball head
+_ball_sphere = UsdGeom.Sphere.Define(stage, "/World/CameraMount_Ballhead")
+_ball_sphere.CreateRadiusAttr(float(MOUNT_BALL_RADIUS))
+_ball_sphere.CreateDisplayColorAttr([Gf.Vec3f(*_MOUNT_BALL_COLOR)])
+UsdGeom.Xformable(_ball_sphere.GetPrim()).AddTranslateOp().Set(
+    Gf.Vec3d(*MOUNT_BALL_CENTER)
+)
+print(f"[OK] 카메라 마운트 ball head: "
+      f"center={MOUNT_BALL_CENTER.tolist()} radius={MOUNT_BALL_RADIUS}")
+
+# 1/4" 볼트 (시각용, ball top 과 카메라 바닥 사이 연결)
+MOUNT_BOLT_CENTER = np.array([0.2, 0.5, 0.95])      # ball top (0.945) 위 +0.005m
+MOUNT_BOLT_RADIUS = 0.004                            # Φ8mm
+MOUNT_BOLT_HEIGHT = 0.01
+_MOUNT_BOLT_COLOR = (0.55, 0.55, 0.60)              # 금속 회색
+_bolt_cyl = UsdGeom.Cylinder.Define(stage, "/World/CameraMount_Bolt")
+_bolt_cyl.CreateRadiusAttr(float(MOUNT_BOLT_RADIUS))
+_bolt_cyl.CreateHeightAttr(float(MOUNT_BOLT_HEIGHT))
+_bolt_cyl.CreateAxisAttr("Z")
+_bolt_cyl.CreateDisplayColorAttr([Gf.Vec3f(*_MOUNT_BOLT_COLOR)])
+UsdGeom.Xformable(_bolt_cyl.GetPrim()).AddTranslateOp().Set(
+    Gf.Vec3d(*MOUNT_BOLT_CENTER)
+)
+print(f"[OK] 카메라 마운트 볼트: center={MOUNT_BOLT_CENTER.tolist()} "
+      f"radius={MOUNT_BOLT_RADIUS} h={MOUNT_BOLT_HEIGHT}")
+
 # ---- 초기화 -------------------------------------------------------------------
 world.reset()
 
@@ -211,7 +243,17 @@ world.reset()
 # 위치: world.reset() 다음. 이유 — reset 전에 USD reference 로 새 rigid body 가 추가되면
 # Robot articulation 의 simulation view 가 invalidate 되어 무한 에러 → Isaac Sim crash.
 CAMERA_PATH = "/World/SketchCamera"
-CAMERA_EYE = Gf.Vec3d(0.2, 0.5, 0.915)
+# ZED X USD 의 origin 은 base_link 와 일치 — [DIAG] 가 (0.97 의도 → 0.97 실제)
+# 확인 (이전 run). 그러나 본체 mesh 들이 origin 아래로 ~0.04m 뻗음 (이전 viewport
+# 에서 어댑터 plate top (z=0.93) 까지 관통). 따라서 mesh 아래 extent 보다 더
+# 큰 buffer 필요 — bolt top 위로 0.045m 잡음.
+_BALL_TOP_Z = float(MOUNT_BALL_CENTER[2] + MOUNT_BALL_RADIUS)             # 0.945
+_BOLT_TOP_Z = float(MOUNT_BOLT_CENTER[2] + MOUNT_BOLT_HEIGHT / 2.0)       # 0.955
+CAMERA_EYE = Gf.Vec3d(
+    float(MOUNT_BALL_CENTER[0]),            # 0.2
+    float(MOUNT_BALL_CENTER[1]),            # 0.5
+    _BOLT_TOP_Z + 0.045,                    # 1.0 (bolt top + 본체 mesh extent buffer)
+)
 CAMERA_TARGET = Gf.Vec3d(0.0, -0.78, 0.5)
 ZED_X_USD_PATH = (
     "/home/minjea/sketch_robot_ws/zed-isaac-sim/"
@@ -222,21 +264,9 @@ ZED_X_USD_PATH = (
 zed_carrier = UsdGeom.Xform.Define(stage, CAMERA_PATH)
 zed_carrier.GetPrim().GetReferences().AddReference(ZED_X_USD_PATH)
 
-# ZED X USD 안의 rigid body 들 kinematic 으로 — 중력 무시, transform 으로만 제어.
-# (kinematic 안 하면 PhysX 가 중력 적용해서 받침대에서 떨어짐.)
-_kinematic_count = 0
-for _descendant in Usd.PrimRange(zed_carrier.GetPrim()):
-    if _descendant.HasAPI(UsdPhysics.RigidBodyAPI):
-        _rb_api = UsdPhysics.RigidBodyAPI(_descendant)
-        _rb_api.GetKinematicEnabledAttr().Set(False)
-        _physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(_descendant)
-        _physx_rb.CreateDisableGravityAttr().Set(True)
-        _kinematic_count += 1
-print(f"[OK] ZED X rigid body kinematic: {_kinematic_count} prim — 받침대 고정")
-
-
-
-
+# ---- ZED X 의 world pose (look-at) 를 USD reference 직후 먼저 적용 ----------------
+# 이유: FixedJoint 가 ZED root 의 world pose 를 기준으로 anchor 계산. transform 이
+# 나중에 적용되면 joint 가 origin 으로 끌어당겨 받침대 한가운데에 박힘.
 from scipy.spatial.transform import Rotation as _R
 
 
@@ -251,26 +281,145 @@ def _body_look_at_quaternion(eye, target, up_axis=(0.0, 0.0, 1.0)):
     left = np.cross(up, fwd)
     left /= np.linalg.norm(left)
     new_up = np.cross(fwd, left)
-    # columns = body basis (X=fwd, Y=left, Z=up) in world frame.
     R_mat = np.column_stack([fwd, left, new_up])
     qx, qy, qz, qw = _R.from_matrix(R_mat).as_quat()
     return Gf.Quatf(float(qw), float(qx), float(qy), float(qz))
 
 
+_q_lookat = _body_look_at_quaternion(CAMERA_EYE, CAMERA_TARGET)
+_qd_lookat = Gf.Quatd(float(_q_lookat.real),
+                      float(_q_lookat.imaginary[0]),
+                      float(_q_lookat.imaginary[1]),
+                      float(_q_lookat.imaginary[2]))
+
 zed_xf = UsdGeom.Xformable(zed_carrier.GetPrim())
 for _op in zed_xf.GetOrderedXformOps():
     zed_xf.GetPrim().RemoveProperty(_op.GetOpName())
-_q = _body_look_at_quaternion(CAMERA_EYE, CAMERA_TARGET)
-_qd = Gf.Quatd(float(_q.real),
-               float(_q.imaginary[0]),
-               float(_q.imaginary[1]),
-               float(_q.imaginary[2]))
 _M = Gf.Matrix4d(1.0)
-_M.SetRotateOnly(Gf.Rotation(_qd))
+_M.SetRotateOnly(Gf.Rotation(_qd_lookat))
 _M.SetTranslateOnly(Gf.Vec3d(CAMERA_EYE[0], CAMERA_EYE[1], CAMERA_EYE[2]))
 zed_xf.AddTransformOp().Set(_M)
-print(f"[OK] ZED X USD reference: {CAMERA_PATH}")
+print(f"[OK] ZED X USD reference + transform: {CAMERA_PATH}")
 print(f"     eye={tuple(CAMERA_EYE)} → target={tuple(CAMERA_TARGET)}")
+
+# ---- 진단: ZED 내부 prim 들의 실제 world 위치 ---------------------------------
+# ZED_X.usdc 의 base_link 가 자체 xformOp 을 갖고 있을 수 있음. 의도한 CAMERA_EYE
+# 와 실제 base_link world 위치 차이 = ZED USD 내부 origin offset → 시각적 박힘
+# 원인 추적용. (의도값 ≠ 실제값이면 ZED 내부 transform 추가 보정 필요.)
+for _diag_path in [
+    CAMERA_PATH,
+    CAMERA_PATH + "/base_link",
+    CAMERA_PATH + "/base_link/ZED_X",
+]:
+    _diag_prim = stage.GetPrimAtPath(_diag_path)
+    if _diag_prim.IsValid() and _diag_prim.IsA(UsdGeom.Xformable):
+        _world_xf = UsdGeom.Xformable(_diag_prim).ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default()
+        )
+        _world_t = _world_xf.ExtractTranslation()
+        print(f"[DIAG] {_diag_path} world pos = "
+              f"({_world_t[0]:.4f}, {_world_t[1]:.4f}, {_world_t[2]:.4f})")
+
+# ---- ZED X rigid body: dynamic + disableGravity --------------------------------
+# IMU 는 dynamic body 에서만 sensor reading 유효. 중력 차단은 아래 fixed joint 와
+# 함께 작용 (joint 가 위치 고정 + gravity off 가 외력 차단).
+_zed_rb_paths = []
+for _descendant in Usd.PrimRange(zed_carrier.GetPrim()):
+    if _descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+        _rb_api = UsdPhysics.RigidBodyAPI(_descendant)
+        _rb_api.GetKinematicEnabledAttr().Set(False)         # dynamic
+        _physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(_descendant)
+        _physx_rb.CreateDisableGravityAttr().Set(True)       # gravity off
+        _zed_rb_paths.append(_descendant.GetPath().pathString)
+print(f"[OK] ZED X rigid body: {len(_zed_rb_paths)} prim (dynamic + disableGravity)")
+print(f"     paths={_zed_rb_paths}")
+
+# ---- ZED X IMU prim 재등록 (kit command — sensor backend 등록 필수) -------------
+# ZED_X.usdc 의 Imu_Sensor 는 IsaacImuSensor typed prim 으로 USD 안에 정의됨.
+# 그러나 C++ sensor backend (acquire_imu_sensor_interface) 는 USD load 만으론
+# 등록 안 함 — IsaacSensorCreateImuSensor kit command 가 호출돼야 internal
+# registration 됨 → 이전 run 의 "no valid sensor reading" 원인.
+# 해결: 기존 prim 의 pose 보존하면서 kit command 로 재생성.
+import omni.kit.commands  # noqa: E402
+IMU_PARENT_PATH = CAMERA_PATH + "/base_link/ZED_X"
+IMU_PRIM_PATH = IMU_PARENT_PATH + "/Imu_Sensor"
+try:
+    _old_imu_prim = stage.GetPrimAtPath(IMU_PRIM_PATH)
+    _imu_t = Gf.Vec3d(0.0, 0.0, 0.0)
+    _imu_q = Gf.Quatd(1.0, 0.0, 0.0, 0.0)
+    if _old_imu_prim.IsValid():
+        # 기존 prim 의 translate/orient 보존 (ZED_X.usdc 의 IMU 위치/자세)
+        _t_attr = _old_imu_prim.GetAttribute("xformOp:translate")
+        _q_attr = _old_imu_prim.GetAttribute("xformOp:orient")
+        if _t_attr and _t_attr.HasAuthoredValue():
+            _tv = _t_attr.Get()
+            _imu_t = Gf.Vec3d(float(_tv[0]), float(_tv[1]), float(_tv[2]))
+        if _q_attr and _q_attr.HasAuthoredValue():
+            _qv = _q_attr.Get()
+            _imu_q = Gf.Quatd(float(_qv.GetReal()),
+                              float(_qv.GetImaginary()[0]),
+                              float(_qv.GetImaginary()[1]),
+                              float(_qv.GetImaginary()[2]))
+        stage.RemovePrim(IMU_PRIM_PATH)                       # 기존 USD prim 제거
+        print(f"[OK] 기존 IMU prim 제거: {IMU_PRIM_PATH}")
+        print(f"     pose 보존: t={tuple(_imu_t)} q={_imu_q}")
+    # kit command 로 재생성 → C++ sensor backend 에 internal 등록 트리거
+    _ok, _new_imu_prim = omni.kit.commands.execute(
+        "IsaacSensorCreateImuSensor",
+        path="/Imu_Sensor",
+        parent=IMU_PARENT_PATH,
+        sensor_period=1.0 / 60.0,                             # physics dt (60 Hz)
+        translation=_imu_t,
+        orientation=_imu_q,
+        linear_acceleration_filter_size=1,
+        angular_velocity_filter_size=1,
+        orientation_filter_size=1,
+    )
+    if _ok and _new_imu_prim:
+        print(f"[OK] IMU prim 재생성 (kit command): {IMU_PRIM_PATH}")
+        print(f"     sensorPeriod={1.0/60.0:.5f}s (60 Hz), filterWidth=1")
+    else:
+        print(f"[ERROR] IsaacSensorCreateImuSensor 실패: ok={_ok}")
+except Exception as _e:
+    print(f"[ERROR] IMU 재생성 실패: {_e}")
+
+# ---- ZED X 를 MountBallhead (ball head sphere) 에 fixed joint 로 anchoring --------
+# 체인: World ← (kinematic) MountBallhead ← (FixedJoint) → ZED /Root.
+# Sim-to-real: 실 ZED 의 swivel head ball + 1/4" 볼트 1점 부착과 1:1 모사.
+# localPos0 = CAMERA_EYE - MOUNT_BALL_CENTER (Ball local frame, identity rot).
+_MOUNT_BALL_PATH = "/World/CameraMount_Ballhead"
+_ball_prim = stage.GetPrimAtPath(_MOUNT_BALL_PATH)
+if _ball_prim.IsValid() and _zed_rb_paths:
+    # (a) Ball = kinematic rigid body (위치 고정, FixedJoint anchor 역할).
+    if not _ball_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        UsdPhysics.RigidBodyAPI.Apply(_ball_prim)
+    _ball_rb = UsdPhysics.RigidBodyAPI(_ball_prim)
+    _ball_rb.CreateRigidBodyEnabledAttr(True)
+    _ball_rb.CreateKinematicEnabledAttr(True)
+    # (b) FixedJoint with explicit localPos0/localRot0.
+    _zed_root_rb_path = _zed_rb_paths[0]                     # 첫 rigid body (= /World/SketchCamera)
+    _joint_path = "/World/SketchCamera_Ballhead_FixedJoint"
+    if stage.GetPrimAtPath(_joint_path).IsValid():
+        stage.RemovePrim(_joint_path)                        # 반복 실행 안전
+    _fj = UsdPhysics.FixedJoint.Define(stage, _joint_path)
+    _fj.CreateBody0Rel().SetTargets([_MOUNT_BALL_PATH])
+    _fj.CreateBody1Rel().SetTargets([_zed_root_rb_path])
+    # body0 (Ballhead, rot=identity) local 에서 anchor = (CAMERA_EYE - Ball_center).
+    _local_pos0 = Gf.Vec3f(
+        float(CAMERA_EYE[0] - MOUNT_BALL_CENTER[0]),
+        float(CAMERA_EYE[1] - MOUNT_BALL_CENTER[1]),
+        float(CAMERA_EYE[2] - MOUNT_BALL_CENTER[2]),
+    )
+    _fj.CreateLocalPos0Attr(_local_pos0)
+    _fj.CreateLocalRot0Attr(_q_lookat)                       # Ball identity → ZED lookat
+    # body1 (ZED root, world pose=CAMERA_EYE+lookat) local 에서 anchor = origin+identity.
+    _fj.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+    _fj.CreateLocalRot1Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+    print(f"[OK] FixedJoint: {_MOUNT_BALL_PATH} ↔ {_zed_root_rb_path}")
+    print(f"     localPos0={tuple(_local_pos0)} (Ball center → ZED 위치)")
+else:
+    print(f"[WARN] FixedJoint anchoring skip "
+          f"(ball valid={_ball_prim.IsValid()}, zed_rb_count={len(_zed_rb_paths)})")
 
 # CameraHelper 가 참조할 left/right camera prim path (ZED_X USD 내부 구조)
 LEFT_CAMERA_PATH = CAMERA_PATH + "/base_link/ZED_X/CameraLeft"
@@ -543,7 +692,7 @@ og.Controller.edit(
             ("ZedHelper.inputs:cameraModel", "ZED_X"),
             # cameraPrim 은 USD relationship (target type) — SET_VALUES 로 안 됨. 아래서 별도 설정.
             ("ZedHelper.inputs:streamingPort", 30000),
-            ("ZedHelper.inputs:transportLayerMode", "NETWORK"),
+            ("ZedHelper.inputs:transportLayerMode", "IPC"),
         ],
     },
 )

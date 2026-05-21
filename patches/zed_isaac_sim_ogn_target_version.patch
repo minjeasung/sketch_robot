@@ -1,0 +1,26 @@
+diff --git a/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraOneStreamerDatabase.py b/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraOneStreamerDatabase.py
+index 7202d63..bf513d8 100644
+--- a/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraOneStreamerDatabase.py
++++ b/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraOneStreamerDatabase.py
+@@ -57,7 +57,7 @@ class SlCameraOneStreamerDatabase(og.Database):
+ 
+     # Imprint the generator and target ABI versions in the file for JIT generation
+     GENERATOR_VERSION = (1, 79, 2)
+-    TARGET_VERSION = (2, 184, 5)
++    TARGET_VERSION = (2, 184, 2)
+ 
+     # This is an internal object that provides per-class storage of a per-node data dictionary
+     PER_NODE_DATA = {}
+diff --git a/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraStreamerDatabase.py b/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraStreamerDatabase.py
+index 5956429..63ebf83 100644
+--- a/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraStreamerDatabase.py
++++ b/exts/sl.sensor.camera/sl/sensor/camera/ogn/SlCameraStreamerDatabase.py
+@@ -54,7 +54,7 @@ class SlCameraStreamerDatabase(og.Database):
+ 
+     # Imprint the generator and target ABI versions in the file for JIT generation
+     GENERATOR_VERSION = (1, 79, 2)
+-    TARGET_VERSION = (2, 184, 5)
++    TARGET_VERSION = (2, 184, 2)
+ 
+     # This is an internal object that provides per-class storage of a per-node data dictionary
+     PER_NODE_DATA = {}
