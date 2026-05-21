@@ -25,7 +25,7 @@
 | 2 | Unity SketchManager.cs 인터페이스로 교체, ROS-TCP-Connector | ✓ 완료 |
 | 3 | MoveIt 충돌 회피 안정화 (4-stage + Stage 5 복귀) | ◐ 부분 완료, wall 등록 이슈 보류 |
 | 4 | RB10 + ZED 통합 (시뮬 검증) | ✓ Session 5 완료 (시뮬 검증) |
-| 5 | 실로봇 (snucem) 연결 + 검증 | □ 다음 |
+| 5 | 실로봇 (snucem) 연결 + 검증 | ◐ 일감 1 (시뮬 ZED 통합, 옵션 C) 완료, 일감 2~ 진행 |
 
 ### Phase 4 진행 현황 (2026-05-12 기준)
 
@@ -341,20 +341,52 @@ ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"
 
 ---
 
-## Phase 5: 실로봇 (snucem) 연결 + 검증 — 다음 세션
+## Phase 5: 실로봇 (snucem) 연결 + 검증 — 진행 중
 
-**목표:** 시뮬에서 검증된 흐름 (Session 5) 을 실로봇에 그대로 적용.
+**일감 1 — 시뮬 ZED 통합 (옵션 C, 2026-05-21):** ✅
+- 시도 A (zed-isaac-sim sl.sensor.camera streamer + zed-ros2-wrapper sim_mode):
+  - SlCameraStreamer (UDP/IPC) 가 wrapper 의 stream subscribe 와 silent fail.
+  - 5+ 라운드 디버깅 (cameraPrim relationship, transportLayerMode, IMU schema,
+    Helper init 순서) 후에도 wrapper / ZED Depth Viewer 둘 다 stream 수신 X.
+  - IMU 등록 (kit command `IsaacSensorCreateImuSensor`), FixedJoint anchoring,
+    ball head + bolt mount (sim-to-real visual fidelity) 모두 완성.
+- 시도 C (옵션 C): Isaac Sim **native ROS2 Camera Helper** 직접 사용 (zed-isaac-sim
+  extension 우회).
+  - `isaacsim.ros2.bridge.ROS2CameraHelper` + `IsaacCreateRenderProduct` 로
+    ZED_X.usdc 의 CameraLeft / CameraRight prim 으로부터 직접 발행.
+  - `IsaacReadIMU` → `ROS2PublishImu` 로 IMU 도 wrapper 동일 topic 발행.
+  - ZED_X.usdc reference 와 mount geometry (Seg1/Seg2/ball/bolt), FixedJoint
+    anchoring 은 시각 fidelity 위해 그대로 유지.
+- 발행 topic (실 ZED ROS2 wrapper 와 1:1):
+  - `/zed/zed_node/rgb/color/rect/image` (+ `_right`)
+  - `/zed/zed_node/rgb/color/rect/camera_info` (+ `_right`)
+  - `/zed/zed_node/depth/depth_registered` (+ `camera_info`, ground-truth 32FC1)
+  - `/zed/zed_node/imu/data`
+- 해상도: 1280×720 @ 30 Hz (ZED X HD720 와 일치).
+- Frame ID: `zed_left_camera_frame_optical`, `zed_right_camera_frame_optical`,
+  `zed_imu_link`. (sim USD prim 명 ↔ ZED frame 변환은 launch-side static TF
+  로 보강 예정 — 일감 2 에 묶음.)
 
-**작업 분해:**
-- snucem 에 sketch_robot_ws 복제 + build (rbpodo_ros2 fork 도 동일 commit)
-- 실 ZED 2i 카메라 연결 + ZED ros2 wrapper (`/zed/zed_node/*` 토픽 발행)
-- 실 환경 측정 (벽 위치, ZED 위치) 반영 — `docs/phase4_session4_environment.md`
-  의 측정값을 실 환경과 대조
-- 시뮬에서 검증된 흐름 (wall_detector → wall_projector → sketch UI →
-  sketch_to_waypoints → moveit_executor) 그대로 실로봇 적용
-- 안전 검증: 속도 제한 (0.1×), 단계적 검증 (Stage 1 단독 → Stage 1~2 → 전체)
+**학회 contribution 노트:**
+zed-isaac-sim 의 IPC channel silent fail 확인 (UDP listen 까지는 동작, 그러나
+wrapper 의 stream subscribe 가 timeout). wrapper 호환성 위해 Isaac Sim native
+ROS2 Camera Helper 로 우회 — sim/real 의 interface (topic, frame, intrinsic)
+**동일 유지로 perception 코드 100% 재사용 보장**.
+
+**남은 일감:**
+- 일감 2: Hand-eye calibration + sim/real frame bridge (static TF)
+- 일감 3: 시뮬 RANSAC 평면 인식 → `/perception/wall_plane` 재검증 (native depth 기반)
+- 일감 4: snucem 에 sketch_robot_ws 복제 + 실 ZED 2i 연결 + 실 환경 측정
+- 일감 5: 시뮬에서 검증된 흐름 (wall_detector → wall_projector → sketch UI →
+  sketch_to_waypoints → moveit_executor) 실로봇 적용
+- 일감 6: 안전 검증 — 속도 제한 (0.1×), 단계적 검증 (Stage 1 단독 → 1~2 → 전체)
 
 **ROS_DOMAIN_ID 분리:** 시뮬 컴 = 11, snucem = 다른 값 (충돌 방지).
+
+**핵심 파일 (옵션 C):**
+- `src/sketch_control/sketch_control/isaac_sim_rb10.py` (line ~580 부터
+  `ZedROS2Graph` OG 그래프)
+- `zed-isaac-sim/` 은 ZED_X.usdc 시각 자산용으로만 유지 (streamer 의존성 끊김)
 
 ---
 

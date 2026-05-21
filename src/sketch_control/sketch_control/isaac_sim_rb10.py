@@ -236,9 +236,11 @@ print(f"[OK] 카메라 마운트 볼트: center={MOUNT_BOLT_CENTER.tolist()} "
 world.reset()
 
 # ---- ZED 카메라 (zed-isaac-sim 의 ZED_X.usdc reference) -----------------------
-# 가짜 USD Camera 들 (body/optical 분리) 대신 zed-isaac-sim 공식 ZED X USD 사용.
-# 내부에 base_link (REP 103) → ZED_X → CameraLeft / CameraRight 구조 + sl.sensor.camera
-# ZED_Camera Helper OmniGraph 노드로 발행 (zed-ros2-wrapper sim_mode 와 통합).
+# ZED_X.usdc 를 reference 하는 이유: 시각적 sim-to-real fidelity (실 ZED X mesh +
+# CameraLeft/CameraRight intrinsic + IMU prim 모두 검증된 ZED official asset).
+# Phase 5 옵션 C 부터는 sl.sensor.camera ZED_Camera Helper (IPC streamer) 사용 X —
+# 아래 ZedROS2Graph 가 Isaac Sim native ROS2CameraHelper 로 wrapper 와 동일한
+# topic/frame/intrinsic 발행. 시각 자산만 활용.
 #
 # 위치: world.reset() 다음. 이유 — reset 전에 USD reference 로 새 rigid body 가 추가되면
 # Robot articulation 의 simulation view 가 invalidate 되어 무한 에러 → Isaac Sim crash.
@@ -595,7 +597,17 @@ NT_ARTIC_CTRL = _node_type("isaacsim.core.nodes.IsaacArticulationController",
                             "omni.isaac.core_nodes.IsaacArticulationController")
 NT_PUB_CLOCK = _node_type("isaacsim.ros2.bridge.ROS2PublishClock",
                             "omni.isaac.ros2_bridge.ROS2PublishClock")
-NT_ZED_CAMERA = "sl.sensor.camera.ZED_Camera"  # zed-isaac-sim extension 의 ZED Camera Helper
+# Isaac Sim native ROS2 / sensor 노드 (Phase 5 옵션 C — zed-isaac-sim IPC 우회).
+NT_CREATE_RP = _node_type("isaacsim.core.nodes.IsaacCreateRenderProduct",
+                            "omni.isaac.core_nodes.IsaacCreateRenderProduct")
+NT_CAMERA_HELPER = _node_type("isaacsim.ros2.bridge.ROS2CameraHelper",
+                                "omni.isaac.ros2_bridge.ROS2CameraHelper")
+NT_CAMERA_INFO_HELPER = _node_type("isaacsim.ros2.bridge.ROS2CameraInfoHelper",
+                                     "omni.isaac.ros2_bridge.ROS2CameraInfoHelper")
+NT_READ_IMU = _node_type("isaacsim.sensors.physics.IsaacReadIMU",
+                           "omni.isaac.isaac_sensor.IsaacReadIMU")
+NT_PUB_IMU = _node_type("isaacsim.ros2.bridge.ROS2PublishImu",
+                          "omni.isaac.ros2_bridge.ROS2PublishImu")
 
 keys = og.Controller.Keys
 
@@ -676,52 +688,147 @@ og.Controller.edit(
         ],
     },
 )
-# ---- ZED Camera Helper (zed-isaac-sim 의 sl.sensor.camera ZED_Camera 노드) ----
-# zed-ros2-wrapper sim_mode 와 IPC 로 통신. wrapper 가 /zed/zed_node/* 발행.
+# ---- Phase 5 옵션 C: Isaac Sim native ROS2 Camera Helper (ZED extension 우회) ----
+# zed-isaac-sim 의 SlCameraStreamer + zed-ros2-wrapper IPC 가 silent fail (RGB/Depth
+# Viewer 모두 stream 수신 X). 우회: Isaac Sim native ROS2CameraHelper 로 wrapper 와
+# 동일한 topic / frame / intrinsic 발행 → perception 코드 100% 재사용.
+#
+# 발행 토픽 (실 ZED ROS2 wrapper 와 1:1):
+#   /zed/zed_node/rgb/color/rect/image           (sensor_msgs/Image)
+#   /zed/zed_node/rgb/color/rect/camera_info     (sensor_msgs/CameraInfo)
+#   /zed/zed_node/depth/depth_registered         (sensor_msgs/Image, 32FC1, ground truth)
+#   /zed/zed_node/depth/camera_info              (sensor_msgs/CameraInfo)
+#   /zed/zed_node/imu/data                       (sensor_msgs/Imu)
+#
+# 해상도: ZED X HD720 (1280x720) — sim 성능 vs 실 ZED X 출력 절충.
+# Frame ID: zed_left_camera_frame_optical / zed_imu_link (실 wrapper 와 동일).
+# 발행 빈도: 시뮬 physics 60 Hz, frameSkipCount=1 → 30 Hz (실 ZED X HD720 와 일치).
+ZED_RES_W = 1280
+ZED_RES_H = 720
+ZED_FRAME_SKIP = 1                          # 60 Hz / (1+1) = 30 Hz
+ZED_LEFT_FRAME_ID = "zed_left_camera_frame_optical"
+ZED_RIGHT_FRAME_ID = "zed_right_camera_frame_optical"
+ZED_IMU_FRAME_ID = "zed_imu_link"
+ZED_RGB_TOPIC = "/zed/zed_node/rgb/color/rect/image"
+ZED_RGB_INFO_TOPIC = "/zed/zed_node/rgb/color/rect/camera_info"
+ZED_DEPTH_TOPIC = "/zed/zed_node/depth/depth_registered"
+ZED_DEPTH_INFO_TOPIC = "/zed/zed_node/depth/camera_info"
+ZED_IMU_TOPIC = "/zed/zed_node/imu/data"
+
 og.Controller.edit(
-    {"graph_path": "/World/ZedCameraGraph", "evaluator_name": "execution"},
+    {"graph_path": "/World/ZedROS2Graph", "evaluator_name": "execution"},
     {
         keys.CREATE_NODES: [
             ("OnTick", NT_TICK),
-            ("ZedHelper", NT_ZED_CAMERA),
+            ("LeftRP", NT_CREATE_RP),       # IsaacCreateRenderProduct (좌)
+            ("RightRP", NT_CREATE_RP),      # IsaacCreateRenderProduct (우, camera_info 의 stereo intrinsic 용)
+            ("RGBHelper", NT_CAMERA_HELPER),
+            ("DepthHelper", NT_CAMERA_HELPER),
+            ("CamInfoRGB", NT_CAMERA_INFO_HELPER),
+            ("CamInfoDepth", NT_CAMERA_INFO_HELPER),
+            ("ReadIMU", NT_READ_IMU),
+            ("PubIMU", NT_PUB_IMU),
+            ("SimTime", NT_SIM_TIME),
         ],
         keys.CONNECT: [
-            ("OnTick.outputs:tick", "ZedHelper.inputs:execIn"),
+            # Tick → render product 생성 → camera helpers
+            ("OnTick.outputs:tick", "LeftRP.inputs:execIn"),
+            ("OnTick.outputs:tick", "RightRP.inputs:execIn"),
+            ("LeftRP.outputs:execOut", "RGBHelper.inputs:execIn"),
+            ("LeftRP.outputs:execOut", "DepthHelper.inputs:execIn"),
+            ("LeftRP.outputs:execOut", "CamInfoRGB.inputs:execIn"),
+            ("LeftRP.outputs:execOut", "CamInfoDepth.inputs:execIn"),
+            ("LeftRP.outputs:renderProductPath", "RGBHelper.inputs:renderProductPath"),
+            ("LeftRP.outputs:renderProductPath", "DepthHelper.inputs:renderProductPath"),
+            ("LeftRP.outputs:renderProductPath", "CamInfoRGB.inputs:renderProductPath"),
+            ("LeftRP.outputs:renderProductPath", "CamInfoDepth.inputs:renderProductPath"),
+            ("RightRP.outputs:renderProductPath", "CamInfoRGB.inputs:renderProductPathRight"),
+            ("RightRP.outputs:renderProductPath", "CamInfoDepth.inputs:renderProductPathRight"),
+            # Tick → IMU read → ROS publish
+            ("OnTick.outputs:tick", "ReadIMU.inputs:execIn"),
+            ("ReadIMU.outputs:execOut", "PubIMU.inputs:execIn"),
+            ("ReadIMU.outputs:angVel", "PubIMU.inputs:angularVelocity"),
+            ("ReadIMU.outputs:linAcc", "PubIMU.inputs:linearAcceleration"),
+            ("ReadIMU.outputs:orientation", "PubIMU.inputs:orientation"),
+            ("SimTime.outputs:simulationTime", "PubIMU.inputs:timeStamp"),
         ],
         keys.SET_VALUES: [
-            ("ZedHelper.inputs:cameraModel", "ZED_X"),
-            # cameraPrim 은 USD relationship (target type) — SET_VALUES 로 안 됨. 아래서 별도 설정.
-            ("ZedHelper.inputs:streamingPort", 30000),
-            ("ZedHelper.inputs:transportLayerMode", "IPC"),
+            # Render product 해상도
+            ("LeftRP.inputs:width", ZED_RES_W),
+            ("LeftRP.inputs:height", ZED_RES_H),
+            ("RightRP.inputs:width", ZED_RES_W),
+            ("RightRP.inputs:height", ZED_RES_H),
+            # RGB helper
+            ("RGBHelper.inputs:type", "rgb"),
+            ("RGBHelper.inputs:topicName", ZED_RGB_TOPIC),
+            ("RGBHelper.inputs:frameId", ZED_LEFT_FRAME_ID),
+            ("RGBHelper.inputs:frameSkipCount", ZED_FRAME_SKIP),
+            # Depth helper (ground-truth 32FC1 m)
+            ("DepthHelper.inputs:type", "depth"),
+            ("DepthHelper.inputs:topicName", ZED_DEPTH_TOPIC),
+            ("DepthHelper.inputs:frameId", ZED_LEFT_FRAME_ID),
+            ("DepthHelper.inputs:frameSkipCount", ZED_FRAME_SKIP),
+            # CameraInfo (stereo — left + right intrinsics 같이 발행)
+            ("CamInfoRGB.inputs:topicName", ZED_RGB_INFO_TOPIC),
+            ("CamInfoRGB.inputs:topicNameRight", ZED_RGB_INFO_TOPIC + "_right"),
+            ("CamInfoRGB.inputs:frameId", ZED_LEFT_FRAME_ID),
+            ("CamInfoRGB.inputs:frameIdRight", ZED_RIGHT_FRAME_ID),
+            ("CamInfoRGB.inputs:frameSkipCount", ZED_FRAME_SKIP),
+            ("CamInfoDepth.inputs:topicName", ZED_DEPTH_INFO_TOPIC),
+            ("CamInfoDepth.inputs:topicNameRight", ZED_DEPTH_INFO_TOPIC + "_right"),
+            ("CamInfoDepth.inputs:frameId", ZED_LEFT_FRAME_ID),
+            ("CamInfoDepth.inputs:frameIdRight", ZED_RIGHT_FRAME_ID),
+            ("CamInfoDepth.inputs:frameSkipCount", ZED_FRAME_SKIP),
+            # IMU
+            ("PubIMU.inputs:topicName", ZED_IMU_TOPIC),
+            ("PubIMU.inputs:frameId", ZED_IMU_FRAME_ID),
         ],
     },
 )
 
-# ZedHelper 의 cameraPrim 은 OGN 의 type="target" (USD relationship). SET_VALUES 로
-# 안 잡혀서 Property 패널에 비어 보임 → wrapper sim_mode TIMEOUT. relationship API 로 직접.
-_zed_helper_path = "/World/ZedCameraGraph/ZedHelper"
-_zed_helper_prim = stage.GetPrimAtPath(_zed_helper_path)
-_cam_rel = _zed_helper_prim.GetRelationship("inputs:cameraPrim")
-if not _cam_rel:
-    _cam_rel = _zed_helper_prim.CreateRelationship("inputs:cameraPrim", custom=False)
-_cam_rel.SetTargets([Sdf.Path(CAMERA_PATH)])
+# cameraPrim 은 OGN 의 type="target" relationship — SET_VALUES 로 안 잡힘. 별도 설정.
+_LEFT_CAM = CAMERA_PATH + "/base_link/ZED_X/CameraLeft"
+_RIGHT_CAM = CAMERA_PATH + "/base_link/ZED_X/CameraRight"
+for _node_name, _target in [
+    ("/World/ZedROS2Graph/LeftRP",  _LEFT_CAM),
+    ("/World/ZedROS2Graph/RightRP", _RIGHT_CAM),
+]:
+    _np = stage.GetPrimAtPath(_node_name)
+    _rel = _np.GetRelationship("inputs:cameraPrim") or \
+           _np.CreateRelationship("inputs:cameraPrim", custom=False)
+    _rel.SetTargets([Sdf.Path(_target)])
 
-print("[OK] ROS2 OmniGraph: TFGraph + JointGraph + ClockGraph + ZedCameraGraph 생성")
-print(f"     ZED Camera Helper cameraPrim (relationship): {CAMERA_PATH}")
-print(f"     zed-ros2-wrapper sim_mode 로 연결:")
-print(f"       ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx sim_mode:=true")
+# IMU read 의 imuPrim relationship — kit command 로 재생성된 IMU prim path 사용.
+_imu_node_path = "/World/ZedROS2Graph/ReadIMU"
+_imu_node_prim = stage.GetPrimAtPath(_imu_node_path)
+_imu_rel = _imu_node_prim.GetRelationship("inputs:imuPrim") or \
+           _imu_node_prim.CreateRelationship("inputs:imuPrim", custom=False)
+_imu_rel.SetTargets([Sdf.Path(IMU_PRIM_PATH)])
+
+print("[OK] ROS2 OmniGraph: TFGraph + JointGraph + ClockGraph + ZedROS2Graph 생성")
+print(f"     Cameras   : {_LEFT_CAM}, {_RIGHT_CAM}")
+print(f"     IMU       : {IMU_PRIM_PATH}")
+print(f"     Resolution: {ZED_RES_W}x{ZED_RES_H} @ {60//(ZED_FRAME_SKIP+1)} Hz")
+print(f"     Topics    : {ZED_RGB_TOPIC}")
+print(f"                 {ZED_DEPTH_TOPIC}")
+print(f"                 {ZED_RGB_INFO_TOPIC}, {ZED_DEPTH_INFO_TOPIC}")
+print(f"                 {ZED_IMU_TOPIC}")
 
 print("=" * 60)
-print("Isaac Sim RB10 씬 준비 완료 (Step 1~5 + EOAT)")
+print("Isaac Sim RB10 씬 준비 완료 (Phase 5 옵션 C — Isaac Sim native ROS2)")
 print(f"  RB10:        link0=(0,0,0), articulation={ARTICULATION_PATH}")
 print(f"  Table:       center={TABLE_CENTER.tolist()} size={TABLE_SIZE.tolist()}")
 print(f"  Steel plate: center={PLATE_CENTER.tolist()} size={PLATE_SIZE.tolist()}")
 print(f"  Wall:        center={WALL_CENTER.tolist()} size={WALL_SIZE.tolist()}")
-print(f"  Camera:      {CAMERA_PATH} eye=(0.2,0.5,0.915) → target=(0,-0.78,0.5)")
+print(f"  Camera EYE:  {tuple(CAMERA_EYE)} → target={tuple(CAMERA_TARGET)}")
 print(f"  Mount seg1:  center={MOUNT_SEG1_CENTER.tolist()} size={MOUNT_SEG1_SIZE.tolist()}")
 print(f"  Mount seg2:  center={MOUNT_SEG2_CENTER.tolist()} size={MOUNT_SEG2_SIZE.tolist()}")
+print(f"  Mount ball:  center={MOUNT_BALL_CENTER.tolist()} r={MOUNT_BALL_RADIUS}")
+print(f"  Mount bolt:  center={MOUNT_BOLT_CENTER.tolist()} r={MOUNT_BOLT_RADIUS} h={MOUNT_BOLT_HEIGHT}")
 print(f"  Roller:      tcp local +{ROLLER_AXIS} offset={ROLLER_OFFSET}m, Φ{ROLLER_RADIUS*2}m × {ROLLER_LENGTH}m")
 print(f"  ROS topics:  /joint_states, /joint_command, /tf, /clock,")
-print(f"               /zed/zed_node/* (zed-ros2-wrapper sim_mode 에서 발행)")
+print(f"               /zed/zed_node/rgb/color/rect/image (+camera_info),")
+print(f"               /zed/zed_node/depth/depth_registered (+camera_info),")
+print(f"               /zed/zed_node/imu/data")
 print(f"  READY_POSE 적용: 롤러가 -Y (벽) 향해야 정상")
 print("=" * 60)
