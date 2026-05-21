@@ -42,3 +42,4 @@ logs/
 
 # Isaac Sim 산출물 (scripts/setup_isaac_assets.sh 로 재생성)
 isaac_assets/
+zed-isaac-sim/
