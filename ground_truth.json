@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "units": "meters / quaternion(xyzw)",
+  "physics_dt_hz": 60,
+  "wall": {
+    "world_pose": {
+      "translation": [
+        0.0,
+        -0.8100000023841858,
+        0.5
+      ],
+      "rotation_xyzw": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "size_xyz": [
+      2.0,
+      0.02,
+      1.5
+    ],
+    "front_surface_y": -0.8
+  },
+  "work_area": {
+    "size_wh": [
+      0.5,
+      0.4
+    ],
+    "tape_width": 0.02,
+    "corners": [
+      {
+        "id": "tl",
+        "world": [
+          -0.25,
+          -0.8,
+          0.7
+        ]
+      },
+      {
+        "id": "tr",
+        "world": [
+          0.25,
+          -0.8,
+          0.7
+        ]
+      },
+      {
+        "id": "bl",
+        "world": [
+          -0.25,
+          -0.8,
+          0.3
+        ]
+      },
+      {
+        "id": "br",
+        "world": [
+          0.25,
+          -0.8,
+          0.3
+        ]
+      }
+    ]
+  },
+  "camera_optical_world_pose": {
+    "translation": [
+      0.2562866180459926,
+      0.4715750877078567,
+      1.0085930379522832
+    ],
+    "rotation_xyzw": [
+      0.04379383426502101,
+      0.5639623523646485,
+      0.8221632998071344,
+      0.06384413556423221
+    ]
+  },
+  "camera_right_optical_world_pose": {
+    "translation": [
+      0.1377251717017309,
+      0.49010029865825483,
+      1.0085930366114138
+    ],
+    "rotation_xyzw": [
+      0.04379383426502101,
+      0.5639623523646485,
+      0.8221632998071344,
+      0.06384413556423221
+    ]
+  },
+  "robot_base_world_pose": null,
+  "apriltag": {
+    "tcp_local_pose": {
+      "translation": [
+        0.0,
+        0.0,
+        0.06
+      ],
+      "rotation_xyzw": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "size_m": 0.15,
+    "family": "tag36h11",
+    "id": 0,
+    "tcp_prim_path": "/World/rb10/rb10_1300e_u/link6/tcp",
+    "tcp_world_pose_at_startup": {
+      "translation": [
+        -0.2685499936342185,
+        1.5195909979078512e-07,
+        1.4969996155333771
+      ],
+      "rotation_xyzw": [
+        2.982962099030476e-08,
+        6.575479685582561e-08,
+        0.707106888392333,
+        -0.7071066739807421
+      ]
+    }
+  },
+  "topics": {
+    "rgb": "/zed/zed_node/rgb/color/rect/image",
+    "rgb_camera_info": "/zed/zed_node/rgb/color/rect/camera_info",
+    "depth": "/zed/zed_node/depth/depth_registered",
+    "depth_camera_info": "/zed/zed_node/depth/camera_info",
+    "imu": "/zed/zed_node/imu/data"
+  },
+  "frames": {
+    "left_camera_optical": "zed_left_camera_frame_optical",
+    "right_camera_optical": "zed_right_camera_frame_optical",
+    "imu": "zed_imu_link"
+  }
+}

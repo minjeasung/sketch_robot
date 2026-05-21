@@ -25,7 +25,7 @@
 | 2 | Unity SketchManager.cs 인터페이스로 교체, ROS-TCP-Connector | ✓ 완료 |
 | 3 | MoveIt 충돌 회피 안정화 (4-stage + Stage 5 복귀) | ◐ 부분 완료, wall 등록 이슈 보류 |
 | 4 | RB10 + ZED 통합 (시뮬 검증) | ✓ Session 5 완료 (시뮬 검증) |
-| 5 | 실로봇 (snucem) 연결 + 검증 | ◐ 일감 1 (시뮬 ZED 통합, 옵션 C) 완료, 일감 2~ 진행 |
+| 5 | 실로봇 (snucem) 연결 + 검증 | ◐ 일감 1+2.3 완료, 일감 2.4 (calib pose / detector) 진행 |
 
 ### Phase 4 진행 현황 (2026-05-12 기준)
 
@@ -373,8 +373,36 @@ wrapper 의 stream subscribe 가 timeout). wrapper 호환성 위해 Isaac Sim na
 ROS2 Camera Helper 로 우회 — sim/real 의 interface (topic, frame, intrinsic)
 **동일 유지로 perception 코드 100% 재사용 보장**.
 
+**일감 2 — Hand-eye calibration (2026-05-21 진행 중):**
+- 2.1 자산 준비: AprilTag PNG (`isaac_assets/apriltag/tag36_11_00000_large.png`,
+  500×500 1-bit grayscale, tag36h11 ID 0). URDF (rb10_1300e_u) 는 sim/real 동일
+  `~/sketch_robot_ws/isaac_assets/rb10_1300e_u.urdf` ↔
+  `~/rb10_ws/src/rbpodo_ros2/rbpodo_description/robots/rb10_1300e_u.urdf`.
+- 2.2 *(plan — claude.ai)*
+- **2.3 ✅ Sim 환경 수정** (isaac_sim_rb10.py):
+  - 기존 1×0.05×1m 흰 박스 wall 을 2.0×0.02×1.5m 로 확장 (front_y=-0.80).
+  - 벽 위 0.5×0.4m 노란 마스킹 테이프 outline (4 strip, tape_w=0.02m, RGB=(1.0,0.85,0)).
+  - AprilTag plane (0.08m 정사각형) 을 TCP local +Z 6cm 에 부착.
+    UsdGeom.Mesh quad + UsdShade UsdPreviewSurface + UsdUVTexture (sourceColorSpace=raw)
+    로 PNG 직접 매핑 → apriltag_ros 가 검정/흰 marker 인식.
+  - Ground truth dump: `~/sketch_robot_ws/ground_truth.json`
+    (wall pose + size, work_area 4 corner world coord, camera optical world pose,
+    robot base world pose, apriltag tcp local pose, topic/frame names).
+  - 학회 contribution baseline — calibration script 가 5 method (Tsai/Park/Horaud/
+    Andreff/Daniilidis) 별 sim ground truth vs estimate 오차 정량 비교.
+- **2.4 진행** apriltag_ros detector launch + detection 확인.
+  - AprilTag prim: TCP local +Z 6cm, identity 회전 (link6 박힘 회피).
+  - Robot pose 분리: `WORK_POSE` (roller -Y, wall 향함, weld 작업 시) vs `CALIB_POSE`
+    (TCP world-X +90° rotation → roller world+Z, AprilTag world+Y camera face-on).
+  - `READY_POSE_DICT = CALIB_POSE` 로 calibration phase 시작. 일감 2.5 완료 후
+    한 줄 `READY_POSE_DICT = WORK_POSE` 변경으로 weld 작업 pose 복귀.
+  - `CALIB_DELTA = (wrist_name, ±1)` constant — 4 candidate (wrist1±π/2,
+    wrist2±π/2) 시각 검증으로 정답 결정. URDF wrist 축 wrist1=(0,1,0),
+    wrist2=(0,0,1), wrist3=(0,1,0) — 직접 IK 없이 empirical fix.
+- 2.5 *(다음 핸드오버)* Calibration script: CALIB_POSE 기준 ±N variation 으로
+  robot 20 pose 이동 + `cv2.calibrateHandEye()`.
+
 **남은 일감:**
-- 일감 2: Hand-eye calibration + sim/real frame bridge (static TF)
 - 일감 3: 시뮬 RANSAC 평면 인식 → `/perception/wall_plane` 재검증 (native depth 기반)
 - 일감 4: snucem 에 sketch_robot_ws 복제 + 실 ZED 2i 연결 + 실 환경 측정
 - 일감 5: 시뮬에서 검증된 흐름 (wall_detector → wall_projector → sketch UI →

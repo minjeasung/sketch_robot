@@ -155,20 +155,69 @@ world.scene.add(VisualCuboid(
 ))
 print(f"[OK] 철판 추가: center={PLATE_CENTER.tolist()} size={PLATE_SIZE.tolist()}")
 
-# ---- 벽 (Step 3) --------------------------------------------------------------
-# 벽 표면(작업면)이 y=-0.78 (+Y normal, 로봇 향함). 두께 0.05m → 중심 y=-0.805.
-# 표면 Z 범위 [0, 1.0] 이라 두께 cube 중심 z=0.5 (cube Z 폭 1.0m).
-WALL_SIZE = np.array([1.0, 0.05, 1.0])
-WALL_CENTER = np.array([0.0, -0.805, 0.5])
+# ---- 벽 + 작업 영역 (Phase 5 일감 2.3) -----------------------------------------
+# 큰 벽 plane (2.0 × 1.5m, 흰색) + 노란 마스킹 테이프 4 strip 으로 0.5 × 0.4m
+# 작업 영역 outline. AprilTag eye-to-hand calibration + RANSAC plane 인식의 시각
+# baseline. 벽 표면 = y=-0.8 (front surface, +Y normal RB10 향함).
+WALL_SIZE = np.array([2.0, 0.02, 1.5])
+WALL_CENTER = np.array([0.0, -0.81, 0.5])                    # center: -0.8 - thickness/2
+_WALL_FRONT_Y = float(WALL_CENTER[1] + WALL_SIZE[1] / 2.0)   # -0.80
 
 world.scene.add(VisualCuboid(
     prim_path="/World/wall",
     name="wall",
     position=WALL_CENTER,
     scale=WALL_SIZE,
-    color=np.array([0.95, 0.95, 0.95]),  # 흰색
+    color=np.array([0.92, 0.92, 0.92]),                      # 밝은 회색
 ))
-print(f"[OK] 벽 추가: center={WALL_CENTER.tolist()} size={WALL_SIZE.tolist()}")
+print(f"[OK] 벽 추가: center={WALL_CENTER.tolist()} size={WALL_SIZE.tolist()} "
+      f"front_y={_WALL_FRONT_Y}")
+
+# 노란 마스킹 테이프 (4 strip, 작업 영역 0.5×0.4 outline). 벽 표면 +Y 1mm 앞에
+# 띄워 z-fighting 회피. tape 폭 0.02m.
+WORK_AREA_W = 0.5                                            # x 방향 (가로)
+WORK_AREA_H = 0.4                                            # z 방향 (세로)
+WORK_AREA_CENTER = np.array([0.0, _WALL_FRONT_Y + 0.001, 0.5])
+TAPE_W = 0.02
+_TAPE_COLOR = np.array([1.0, 0.85, 0.0])                     # 선명한 노랑
+_TAPE_Y = float(WORK_AREA_CENTER[1])                         # 벽 surface + 1mm
+
+# Outline outer corners: x = ±(WORK_AREA_W/2), z = WORK_AREA_CENTER[2] ± (WORK_AREA_H/2).
+_x_outer = float(WORK_AREA_W / 2.0)                          # 0.25
+_z_top   = float(WORK_AREA_CENTER[2] + WORK_AREA_H / 2.0)    # 0.70
+_z_bot   = float(WORK_AREA_CENTER[2] - WORK_AREA_H / 2.0)    # 0.30
+
+_tape_strips = [
+    # name, center, scale  (tape thickness in Y = 0.001 — paper-thin)
+    ("Top",    np.array([0.0, _TAPE_Y, _z_top - TAPE_W/2]),
+                np.array([WORK_AREA_W, 0.001, TAPE_W])),
+    ("Bottom", np.array([0.0, _TAPE_Y, _z_bot + TAPE_W/2]),
+                np.array([WORK_AREA_W, 0.001, TAPE_W])),
+    ("Left",   np.array([-_x_outer + TAPE_W/2, _TAPE_Y, WORK_AREA_CENTER[2]]),
+                np.array([TAPE_W, 0.001, WORK_AREA_H])),
+    ("Right",  np.array([ _x_outer - TAPE_W/2, _TAPE_Y, WORK_AREA_CENTER[2]]),
+                np.array([TAPE_W, 0.001, WORK_AREA_H])),
+]
+for _name, _center, _scale in _tape_strips:
+    world.scene.add(VisualCuboid(
+        prim_path=f"/World/MaskingTape_{_name}",
+        name=f"masking_tape_{_name.lower()}",
+        position=_center,
+        scale=_scale,
+        color=_TAPE_COLOR,
+    ))
+print(f"[OK] 마스킹 테이프 4 strip: outline {WORK_AREA_W}m × {WORK_AREA_H}m "
+      f"@ z=[{_z_bot}, {_z_top}], tape_w={TAPE_W}m")
+
+# Ground truth: 작업 영역 4 outer corners (벽 surface y=_WALL_FRONT_Y).
+WORK_AREA_CORNERS = [
+    ("tl", [-_x_outer, _WALL_FRONT_Y, _z_top]),
+    ("tr", [ _x_outer, _WALL_FRONT_Y, _z_top]),
+    ("bl", [-_x_outer, _WALL_FRONT_Y, _z_bot]),
+    ("br", [ _x_outer, _WALL_FRONT_Y, _z_bot]),
+]
+for _cid, _w in WORK_AREA_CORNERS:
+    print(f"[DIAG] work_area corner {_cid} = ({_w[0]:.4f}, {_w[1]:.4f}, {_w[2]:.4f})")
 
 # ---- 카메라 마운트 (ㄴ자 알루미늄 프레임, 50×50mm 단면) ------------------------
 # 세그먼트1: 수평 (책상 위, +Y 방향으로 누움), 책상 위에 얹힘
@@ -435,17 +484,20 @@ except Exception as _e:
     print(f"[ERROR] RB10 articulation 실패: {_e}")
     print("      → RB10 USD 자체 문제 또는 ArticulationRoot 깨짐")
 
-# ---- READY_POSE 자세 적용 (moveit_executor.py 의 READY_POSE_JOINTS 와 동일) -----
-# 측정일 2026-05-12, TCP 위치 (0.173, -0.153, 0.739), 롤러가 -Y (벽) 향함.
-# 진단용 flow (사용자 가이드):
-#   1) set_joints_default_state — articulation 의 default 자세 = READY_POSE
+# ---- WORK_POSE / CALIB_POSE 분리 (Phase 5 일감 2.4) -----------------------------
+# 시작 pose 적용 flow (사용자 가이드):
+#   1) set_joints_default_state — articulation 의 default 자세
 #   2) world.reset() — default state 가 시뮬에 적용 (이미 위에서 호출됨)
 #   3) set_joint_positions — 현재 자세 텔레포트
 #   4) set_joint_position_targets — drive target 설정 (drive 가 그쪽으로 유지)
 #   5) ArticulationController.apply_action(positions=...) — 동일 목적, 다른 API
 #   6) set_gains — drive PD gain 조정 (USD drive 가 약할 경우)
 # Drive 가 정상이면 위만으로 자세 유지. physics callback 으로 강제 holding 안 함.
-READY_POSE_DICT = {
+#
+# WORK_POSE — moveit_executor.py 의 READY_POSE_JOINTS 와 동일. 측정일 2026-05-12,
+#   TCP 위치 (0.173, -0.153, 0.739), 롤러 -Y (wall) 향함, TCP frame ≈ world frame.
+#   weld/sketch 작업 시 사용 pose.
+WORK_POSE = {
     "base":     0.0005,   # J0 +0.03°
     "shoulder": -0.9343,  # J1 -53.53°
     "elbow":    2.4247,   # J2 +138.92°
@@ -453,6 +505,36 @@ READY_POSE_DICT = {
     "wrist2":   1.5676,   # J4 +89.81°
     "wrist3":   0.0000,   # J5 0°
 }
+
+# CALIB_POSE — eye-to-hand AprilTag calibration 용. WORK_POSE 의 TCP 를 world X 축
+# 기준 ~±90° 회전 → roller (TCP -Y) 가 world +Z (위), AprilTag (TCP +Z) 가
+# world +Y (camera face-on). URDF wrist 축이 wrist1=(0,1,0), wrist2=(0,0,1),
+# wrist3=(0,1,0) — world 에 trace 한 결과 직접 IK 없이 한 wrist 만 ±π/2 조정해
+# viewport 시각 검증으로 결정. 4 candidate (1 줄 토글):
+#
+#   CALIB_DELTA = ("wrist1", -1)    → wrist1 = -0.0581 (현 -1.6293 + π/2)
+#   CALIB_DELTA = ("wrist1", -1)    → wrist1 = -3.1997 (현 -1.6293 - π/2)  ※ limit -2π 근접
+#   CALIB_DELTA = ("wrist2", +1)    → wrist2 =  3.1392 (현  1.5676 + π/2)  ※ limit +π 근접
+#   CALIB_DELTA = ("wrist2", -1)    → wrist2 = -0.0040 (현  1.5676 - π/2)
+#
+# 각 후보마다 rqt_image_view 에서:
+#   - roller 가 world +Z (위) 향하는지
+#   - AprilTag 가 카메라 face-on (sharp pattern 정면) 으로 보이는지
+# 둘 다 만족하는 candidate 가 정답. 결정 후 한 줄 fixed.
+import math as _math_calib                                    # noqa: E402
+CALIB_DELTA = ("wrist1", -1)                                  # 첫 시도 — 시각 검증 후 조정
+CALIB_POSE = dict(WORK_POSE)
+CALIB_POSE[CALIB_DELTA[0]] += CALIB_DELTA[1] * (_math_calib.pi / 2.0)
+
+# 시작 시 적용할 pose — Phase 5 일감 2.4 (calibration) 동안 CALIB_POSE 사용.
+# 일감 2.5 완료 후 WORK_POSE 로 복귀 (한 줄 변경).
+READY_POSE_DICT = CALIB_POSE
+print(f"[OK] 시작 pose = CALIB_POSE (eye-to-hand calibration), "
+      f"delta={CALIB_DELTA[0]} {'+' if CALIB_DELTA[1] > 0 else '-'}π/2")
+print(f"     WORK_POSE:  wrist1={WORK_POSE['wrist1']:.4f}, "
+      f"wrist2={WORK_POSE['wrist2']:.4f}, wrist3={WORK_POSE['wrist3']:.4f}")
+print(f"     CALIB_POSE: wrist1={CALIB_POSE['wrist1']:.4f}, "
+      f"wrist2={CALIB_POSE['wrist2']:.4f}, wrist3={CALIB_POSE['wrist3']:.4f}")
 
 try:
     if all(n in READY_POSE_DICT for n in _joint_names):
@@ -573,6 +655,102 @@ else:
     print(f"     손잡이 방향 (TCP local): {ROLLER_AXIS} offset={ROLLER_OFFSET}m")
     print(f"     롤러: Φ{ROLLER_RADIUS*2}m × {ROLLER_LENGTH}m, long axis=TCP local +{_roller_long_axis}")
     print(f"     연결 막대: 길이 {ROLLER_OFFSET}m, Φ0.02m, long axis=TCP local {_axis_letter}")
+
+# ---- AprilTag 부착 (Phase 5 일감 2.3 eye-to-hand calibration target) ------------
+# 작은 mesh plane + UsdPreviewSurface 텍스처 (tag36h11 ID 0). TCP local +Z 6cm,
+# 법선 = TCP local +Z. 검정/흰 marker pattern 으로 apriltag_ros 가 detect.
+# Calibration script 가 ground_truth.json 의 apriltag_tcp_local_pose 와 비교.
+from pxr import UsdShade                              # noqa: E402
+
+APRILTAG_PNG = "/home/minjea/sketch_robot_ws/isaac_assets/apriltag/tag36_11_00000_flipV.png"
+APRILTAG_SIZE = 0.15
+# 2.4 fix#2: link6 박힘 회피 위해 TCP local +Z (6cm) 로 되돌림. tag normal 은 TCP
+# 의 +Z 방향. 카메라 face-on 은 별도 — robot wrist 를 calibration pose 로 회전.
+APRILTAG_TCP_OFFSET = (0.0, 0.0, 0.06)               # TCP local +Z 6cm (원래대로)
+APRILTAG_TCP_QUAT_XYZW = (0.0, 0.0, 0.0, 1.0)        # identity (원래대로)
+
+if TCP_PRIM_PATH is not None:
+    _tag_path = TCP_PRIM_PATH + "/apriltag"
+    if stage.GetPrimAtPath(_tag_path).IsValid():
+        stage.RemovePrim(_tag_path)                  # 반복 실행 안전
+
+    # 4-vertex quad mesh in TCP local X-Y plane (normal +Z).
+    _half = APRILTAG_SIZE / 2.0
+    _tag_mesh = UsdGeom.Mesh.Define(stage, _tag_path)
+    _tag_mesh.CreatePointsAttr([
+        Gf.Vec3f(-_half, -_half, 0.0),
+        Gf.Vec3f( _half, -_half, 0.0),
+        Gf.Vec3f( _half,  _half, 0.0),
+        Gf.Vec3f(-_half,  _half, 0.0),
+    ])
+    _tag_mesh.CreateFaceVertexCountsAttr([4])
+    _tag_mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    _tag_mesh.CreateNormalsAttr([Gf.Vec3f(0.0, 0.0, 1.0)] * 4)
+    _tag_mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
+    # extent for renderer bbox
+    _tag_mesh.CreateExtentAttr([
+        Gf.Vec3f(-_half, -_half, 0.0),
+        Gf.Vec3f( _half,  _half, 0.0),
+    ])
+    # UV primvar — PNG 가 plane 전체에 0~1 정사각형으로 매핑.
+    _uv_primvar = UsdGeom.PrimvarsAPI(_tag_mesh.GetPrim()).CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+    )
+    _uv_primvar.Set([
+        Gf.Vec2f(0.0, 1.0),   # vertex 0 (-X, -Y) → UV (0, 1)
+        Gf.Vec2f(1.0, 1.0),   # vertex 1 ( X, -Y) → UV (1, 1)
+        Gf.Vec2f(1.0, 0.0),   # vertex 2 ( X,  Y) → UV (1, 0)
+        Gf.Vec2f(0.0, 0.0),   # vertex 3 (-X,  Y) → UV (0, 0)
+    ])
+    # Translate + Orient (TCP local pose). Orient 는 APRILTAG_TCP_QUAT_XYZW 가
+    # identity 여도 USD 컨벤션상 명시 — ground_truth.json 과 1:1 매칭.
+    _tag_xf = UsdGeom.Xformable(_tag_mesh.GetPrim())
+    _tag_xf.AddTranslateOp().Set(Gf.Vec3d(*APRILTAG_TCP_OFFSET))
+    _tag_xf.AddOrientOp().Set(Gf.Quatf(
+        float(APRILTAG_TCP_QUAT_XYZW[3]),                 # w
+        float(APRILTAG_TCP_QUAT_XYZW[0]),                 # x
+        float(APRILTAG_TCP_QUAT_XYZW[1]),                 # y
+        float(APRILTAG_TCP_QUAT_XYZW[2]),                 # z
+    ))
+
+    # Material graph: Mesh → MaterialBindingAPI → Material → PBR surface ← Texture ← UV reader.
+    _mat_path = _tag_path + "/Material"
+    _material = UsdShade.Material.Define(stage, _mat_path)
+
+    _pbr_shader = UsdShade.Shader.Define(stage, _mat_path + "/PBRShader")
+    _pbr_shader.CreateIdAttr("UsdPreviewSurface")
+    _pbr_shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.9)
+    _pbr_shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+
+    _st_reader = UsdShade.Shader.Define(stage, _mat_path + "/STReader")
+    _st_reader.CreateIdAttr("UsdPrimvarReader_float2")
+    _st_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    _st_reader_out = _st_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+    _tex_shader = UsdShade.Shader.Define(stage, _mat_path + "/Texture")
+    _tex_shader.CreateIdAttr("UsdUVTexture")
+    _tex_shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(
+        Sdf.AssetPath(APRILTAG_PNG)
+    )
+    _tex_shader.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+    _tex_shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
+        _st_reader_out
+    )
+    _tex_rgb = _tex_shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+
+    _pbr_shader.CreateInput(
+        "diffuseColor", Sdf.ValueTypeNames.Color3f
+    ).ConnectToSource(_tex_rgb)
+    _material.CreateSurfaceOutput().ConnectToSource(
+        _pbr_shader.ConnectableAPI(), "surface"
+    )
+    UsdShade.MaterialBindingAPI(_tag_mesh.GetPrim()).Bind(_material)
+
+    print(f"[OK] AprilTag 부착: {_tag_path}")
+    print(f"     size={APRILTAG_SIZE}m, TCP local offset={APRILTAG_TCP_OFFSET}, "
+          f"texture={APRILTAG_PNG.split('/')[-1]}")
+else:
+    print(f"[WARN] TCP_PRIM_PATH 없음 — AprilTag 부착 skip")
 
 # ==== ROS2 OmniGraph (Step 5) ==================================================
 
@@ -814,12 +992,93 @@ print(f"                 {ZED_DEPTH_TOPIC}")
 print(f"                 {ZED_RGB_INFO_TOPIC}, {ZED_DEPTH_INFO_TOPIC}")
 print(f"                 {ZED_IMU_TOPIC}")
 
+# ---- Ground truth dump (Phase 5 일감 2.3 — calibration baseline) ----------------
+# 학회 contribution: AprilTag eye-to-hand calibration 결과를 sim ground truth 와
+# 정량 비교. calibration script 가 이 JSON 을 읽어 5 method (Tsai/Park/Horaud/
+# Andreff/Daniilidis) 별 오차 측정.
+import json as _json                                          # noqa: E402
+
+def _world_pose_dict(prim_path):
+    """Stage 의 prim world transform 을 (translation, rotation xyzw) dict 로."""
+    _p = stage.GetPrimAtPath(prim_path)
+    if not _p.IsValid() or not _p.IsA(UsdGeom.Xformable):
+        return None
+    _xf = UsdGeom.Xformable(_p).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    _t = _xf.ExtractTranslation()
+    _q = _xf.ExtractRotation().GetQuat()
+    _i = _q.GetImaginary()
+    return {
+        "translation": [float(_t[0]), float(_t[1]), float(_t[2])],
+        "rotation_xyzw": [float(_i[0]), float(_i[1]), float(_i[2]), float(_q.GetReal())],
+    }
+
+_gt = {
+    "schema_version": 1,
+    "units": "meters / quaternion(xyzw)",
+    "physics_dt_hz": 60,
+    "wall": {
+        "world_pose": _world_pose_dict("/World/wall") or {
+            "translation": WALL_CENTER.tolist(),
+            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        },
+        "size_xyz": WALL_SIZE.tolist(),
+        "front_surface_y": _WALL_FRONT_Y,
+    },
+    "work_area": {
+        "size_wh": [WORK_AREA_W, WORK_AREA_H],
+        "tape_width": TAPE_W,
+        "corners": [
+            {"id": _cid, "world": [float(c) for c in _w]}
+            for _cid, _w in WORK_AREA_CORNERS
+        ],
+    },
+    "camera_optical_world_pose": _world_pose_dict(_LEFT_CAM),
+    "camera_right_optical_world_pose": _world_pose_dict(_RIGHT_CAM),
+    "robot_base_world_pose": _world_pose_dict(ARTICULATION_PATH),
+    "apriltag": {
+        "tcp_local_pose": {
+            "translation": list(APRILTAG_TCP_OFFSET),
+            "rotation_xyzw": list(APRILTAG_TCP_QUAT_XYZW),
+        },
+        "size_m": APRILTAG_SIZE,
+        "family": "tag36h11",
+        "id": 0,
+        "tcp_prim_path": TCP_PRIM_PATH,
+        "tcp_world_pose_at_startup": (
+            _world_pose_dict(TCP_PRIM_PATH) if TCP_PRIM_PATH else None
+        ),
+    },
+    "topics": {
+        "rgb": ZED_RGB_TOPIC,
+        "rgb_camera_info": ZED_RGB_INFO_TOPIC,
+        "depth": ZED_DEPTH_TOPIC,
+        "depth_camera_info": ZED_DEPTH_INFO_TOPIC,
+        "imu": ZED_IMU_TOPIC,
+    },
+    "frames": {
+        "left_camera_optical": ZED_LEFT_FRAME_ID,
+        "right_camera_optical": ZED_RIGHT_FRAME_ID,
+        "imu": ZED_IMU_FRAME_ID,
+    },
+}
+_GT_PATH = "/home/minjea/sketch_robot_ws/ground_truth.json"
+try:
+    with open(_GT_PATH, "w") as _f:
+        _json.dump(_gt, _f, indent=2)
+    print(f"[OK] ground_truth.json 저장: {_GT_PATH}")
+except Exception as _e:
+    print(f"[ERROR] ground_truth.json 저장 실패: {_e}")
+
 print("=" * 60)
 print("Isaac Sim RB10 씬 준비 완료 (Phase 5 옵션 C — Isaac Sim native ROS2)")
 print(f"  RB10:        link0=(0,0,0), articulation={ARTICULATION_PATH}")
 print(f"  Table:       center={TABLE_CENTER.tolist()} size={TABLE_SIZE.tolist()}")
 print(f"  Steel plate: center={PLATE_CENTER.tolist()} size={PLATE_SIZE.tolist()}")
-print(f"  Wall:        center={WALL_CENTER.tolist()} size={WALL_SIZE.tolist()}")
+print(f"  Wall:        center={WALL_CENTER.tolist()} size={WALL_SIZE.tolist()} "
+      f"(front y={_WALL_FRONT_Y})")
+print(f"  Work area:   {WORK_AREA_W}m × {WORK_AREA_H}m yellow outline at wall center")
+print(f"  AprilTag:    tag36h11 id=0, size={APRILTAG_SIZE}m, "
+      f"TCP local +Z={APRILTAG_TCP_OFFSET[2]}m, normal=TCP+Z")
 print(f"  Camera EYE:  {tuple(CAMERA_EYE)} → target={tuple(CAMERA_TARGET)}")
 print(f"  Mount seg1:  center={MOUNT_SEG1_CENTER.tolist()} size={MOUNT_SEG1_SIZE.tolist()}")
 print(f"  Mount seg2:  center={MOUNT_SEG2_CENTER.tolist()} size={MOUNT_SEG2_SIZE.tolist()}")
@@ -830,5 +1089,7 @@ print(f"  ROS topics:  /joint_states, /joint_command, /tf, /clock,")
 print(f"               /zed/zed_node/rgb/color/rect/image (+camera_info),")
 print(f"               /zed/zed_node/depth/depth_registered (+camera_info),")
 print(f"               /zed/zed_node/imu/data")
-print(f"  READY_POSE 적용: 롤러가 -Y (벽) 향해야 정상")
+print(f"  Ground truth: {_GT_PATH}")
+print(f"  Pose 적용: CALIB_POSE (calibration) — roller +Z(up), AprilTag camera face-on 기대")
+print(f"             일감 2.5 완료 후 'READY_POSE_DICT = WORK_POSE' 로 변경 (roller -Y/wall)")
 print("=" * 60)
