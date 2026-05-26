@@ -6,10 +6,14 @@
 Session 4 까지 시뮬에서 RB10 자세/EOAT/벽/카메라 마운트가 시각적으로 정리되었고,
 Stage 5 의 motion pipeline 도 검증됨. 다음 단계는:
 
+이 세션의 기준 EOAT 는 **페인트 롤러**다. 목표는 용접 공정 자체가 아니라, 롤러로
+카메라 기반 sketch-to-surface path following 을 먼저 안정화하는 것. 이후 같은
+perception / waypoint / MoveIt pipeline 위에서 용접 토치 EOAT 로 확장한다.
+
 1. ZED 의 raw 데이터 (image, depth, pointcloud) 를 ROS topic 으로 흘리기 (Isaac Sim 안)
 2. 그 데이터로 perception (벽 평면 검출, 정면 가상 view) 수행
 3. 브라우저 UI 에서 정면 view 위에 사용자가 그림 → 그 픽셀이 실제 3D world 좌표로 변환
-4. moveit_executor 가 그 world 좌표를 받아 Stage 1~5 실행
+4. moveit_executor 가 그 world 좌표를 받아 롤러 EOAT 로 Stage 1~5 실행
 
 → 이게 Phase 4 의 마지막 시뮬 검증. Phase 5 에서 실로봇으로 옮김.
 
@@ -84,6 +88,8 @@ Stage 5 의 motion pipeline 도 검증됨. 다음 단계는:
 - waypoint 의 position/orientation 그대로 사용 (sketch_to_waypoints 가 이미 처리).
 - target/n 은 caller 호환 위해 yaml 에서 계속 받음 (offset_along_normal 용).
 - Stage 2 cartesian threshold 0.85 (95% → 85% 완화, 실제 trajectory 의 미세 편차 허용).
+- 현재 EOAT 는 rod+roller attached collision 이며, 용접 토치용 공정 제어는 아직
+  적용하지 않는다.
 
 ---
 
@@ -121,7 +127,7 @@ web/
   초기엔 ground plane 잡힘 → distance crop (<2m) 으로 해결.
 - **/perception/wall_plane rate:** ~8 Hz (RANSAC 무거움. PointCloud rate 보다 낮음).
 - **/perception/wall_front_view rate:** ~30 Hz (warpPerspective 가벼움, RGB rate 따라감).
-- **브라우저 sketch → moveit_executor Stage 1~5:** SUCCESS. EOAT 가 벽을 뚫지 않고
+- **브라우저 sketch → moveit_executor Stage 1~5:** SUCCESS. 롤러 EOAT 가 벽을 뚫지 않고
   2cm offset 으로 표면 추종. Stage 2 의 cartesian 이 0.85 threshold 로 통과.
 
 ---
@@ -138,17 +144,19 @@ web/
 
 ---
 
-## 다음 단계 — Phase 5 (실로봇)
+## 다음 단계 — Phase 5 (실로봇, 롤러 우선)
 
 - snucem 에 sketch_robot_ws 동기화 (origin/main pull)
 - rbpodo_ros2 fork 도 동일 commit (use_isaac_sim 분기는 false 로 두면 실로봇 path)
 - 실 ZED 2i 연결 + zed_ros2_wrapper 띄움 (Isaac Sim 의 토픽 이름 그대로라 무변경)
 - 실 환경 측정 (벽/카메라 위치) 으로 `docs/phase4_session4_environment.md` 갱신
+- 페인트 롤러 EOAT 기준 offset / collision / reachable workspace 를 먼저 확정
 - 단계적 검증:
   1. wall_detector 가 실 ZED pointcloud 로 평면 검출하는지
   2. wall_projector 결과가 시각적으로 맞는지
   3. 브라우저 sketch → sketch_to_waypoints → moveit_executor Stage 1 단독
   4. Stage 1~5 전체, 속도 0.1× 부터 시작
+- 위 검증이 끝난 뒤 용접 토치 EOAT 와 용접 공정 파라미터로 확장
 
 ---
 

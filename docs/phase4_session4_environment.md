@@ -57,11 +57,16 @@
 - 표면: 흰색 벽, 노란/주황 마스킹 테이프 격자
 
 ## EOAT (페인트 롤러)
+- 현재 단계의 기준 EOAT 는 용접 토치가 아니라 페인트 롤러.
+- 목적: 용접 전 단계로, 롤러를 이용해 카메라 기반 sketch-to-surface 경로 추종과
+  실로봇 안전 절차를 먼저 검증한다.
+- 용접 토치 EOAT 는 롤러 pipeline 이 안정화된 뒤 후속 단계에서 같은 perception /
+  motion 구조 위에 얹는다.
 - 도구 종류: 페인트 롤러 (도장 작업)
 - TCP frame (RB10 EE) → 롤러 중심까지 X 거리: 0.260 m
 - 롤러 직경: 0.05 m (Φ50mm)
 - 롤러 길이 (축 방향): 0.18 m
-- Mount axis: 코드 변수 TORCH_MOUNT_AXIS — 다음 세션 결정
+- Mount axis: 코드 변수 ROD_AXIS / ROLLER_LONG_AXIS 로 관리
   - (UR10 시뮬에선 +Y 였음, RB10 에서는 미정)
 - 작업 시 EE 와 벽 거리: 0.260 + 0.025 = 0.285 m (벽 표면 ~ TCP)
 
@@ -86,3 +91,5 @@
 - 벽 X 정렬 정확히 (현재 중심 가정)
 - 페인트 롤러 attached collision (cylinder: r=0.025, L=0.18)
 - READY_POSE_JOINTS 코드 갱신 (위 6개 값)
+- 롤러 검증 완료 후 용접 토치 EOAT 로 확장할 때 offset / collision / process
+  parameter 를 별도 갱신

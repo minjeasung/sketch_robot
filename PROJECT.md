@@ -7,13 +7,24 @@
 
 ## 1. 프로젝트 정체성
 
-**한 줄**: 스케치 인터페이스를 통해 다양한 대상물에 용접 경로를 그리고, 실제 로봇이 그 경로를 따라 용접하게 하는 시스템.
+**한 줄**: 스케치 인터페이스로 그린 2D 경로를 카메라 기반 3D 표면 경로로 변환하고, 먼저 페인트 롤러 EOAT 로 표면 추종을 검증한 뒤 용접 토치로 확장하는 시스템.
+
+**현재 구현 전략 (중요):**
+- 1차 구현 대상은 **용접 토치가 아니라 페인트 롤러 EOAT**.
+- 롤러로 먼저 검증하는 범위:
+  - ZED 카메라 기반 작업면 인식
+  - sketch pixel → 3D waypoint 변환
+  - RB10 의 표면 접근 / 추종 / 후퇴 / READY 복귀
+  - EOAT offset, collision, hand-eye calibration, 실로봇 안전 절차
+- 용접 구현은 롤러로 위 pipeline 이 안정화된 뒤, EOAT 를 토치로 바꾸고 공정 파라미터를 추가하는 **후속 확장 단계**.
+- 따라서 현재 Isaac Sim 의 RB10 환경은 용접 물리 시뮬레이션이 아니라 **롤러 기반 sketch-to-surface path following 검증용 디지털 테스트베드**.
 
 **최종 흐름**:
 1. 사용자가 카메라 화면을 본다 (Unity 또는 Python GUI)
 2. 화면에서 클릭/드래그로 직선/도형을 그린다
 3. 시스템이 그 픽셀 경로를 작업물 표면 위 3D 경로로 변환한다
-4. 로봇이 토치를 들고 그 경로를 따라 용접 동작을 수행한다
+4. 현재 단계: 로봇이 페인트 롤러를 들고 그 경로를 따라 표면을 추종한다
+5. 후속 단계: 동일한 perception/control 구조를 용접 토치 EOAT 로 확장한다
 
 ---
 
@@ -24,8 +35,8 @@
 | 1 | Python sketch_ui (tkinter) + Isaac Sim 검증, MoveIt 2-stage approach | ✓ 완료 |
 | 2 | Unity SketchManager.cs 인터페이스로 교체, ROS-TCP-Connector | ✓ 완료 |
 | 3 | MoveIt 충돌 회피 안정화 (4-stage + Stage 5 복귀) | ◐ 부분 완료, wall 등록 이슈 보류 |
-| 4 | RB10 + ZED 통합 (시뮬 검증) | ✓ Session 5 완료 (시뮬 검증) |
-| 5 | 실로봇 (snucem) 연결 + 검증 | ◐ 일감 1+2.3 완료, 일감 2.4 (calib pose / detector) 진행 |
+| 4 | RB10 + ZED + 페인트 롤러 EOAT 통합 (시뮬 검증) | ✓ Session 5 완료 (시뮬 검증) |
+| 5 | 실로봇 (snucem) 연결 + 롤러 기반 검증 | ◐ 일감 1+2.3 완료, 2.4 진행, 2.5 script 작성 완료 |
 
 ### Phase 4 진행 현황 (2026-05-12 기준)
 
@@ -48,7 +59,8 @@
     elbow→elbow, wrist_1→wrist1, wrist_2→wrist2, wrist_3→wrist3, tool0→tcp
   - READY_POSE 갱신 (UR10 값 → RB10 값)
 - 시뮬에서 Stage 1~5 검증 (Phase 3 보류 이슈인 wall 등록도 같이 풀기)
-- 토치 준비되면 실로봇 Stage 1~4 (TORCH_MOUNT_AXIS 결정)
+- 롤러 EOAT 기준으로 실로봇 Stage 1~4 검증 (ROD_AXIS / ROLLER_LONG_AXIS 결정)
+- 용접 토치는 롤러 pipeline 안정화 후 후속 확장으로 전환
 - ZED 통합 (외부 고정, eye-to-hand, static TF, RANSAC plane)
 
 **자산:**
@@ -301,11 +313,11 @@ ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"
 - 모든 ROS 패키지 최신 (apt upgrade 후 ABI mismatch 해결)
 
 **다음 (Session 5+):**
-- TORCH_MOUNT_AXIS 결정 (시뮬 시각으로)
+- 롤러 EOAT 축 결정 (ROD_AXIS / ROLLER_LONG_AXIS, 시뮬 시각으로)
 - Stage 1~4 시뮬 검증
 - objects.yaml: wall/table/철판/막대/카메라/롤러 collision 등록
 - ZED 통합 시작 (perception/ransac_multiplane.py 활용)
-- 실로봇 토치/롤러 마운팅 (실로봇 작업 가능해지면)
+- 실로봇 롤러 마운팅 우선 검증, 이후 용접 토치 마운팅으로 확장
 
 ### Phase 4 Session 5 추가 완료 (2026-05-15 ~ 16)
 
@@ -341,7 +353,10 @@ ros2 topic pub --once /debug_trigger_stage5 std_msgs/Bool "data: true"
 
 ---
 
-## Phase 5: 실로봇 (snucem) 연결 + 검증 — 진행 중
+## Phase 5: 실로봇 (snucem) 연결 + 롤러 기반 검증 — 진행 중
+
+**Phase 5 의 기준 EOAT:** 페인트 롤러.
+이 Phase 의 목적은 용접 자체 구현이 아니라, 롤러로 카메라-스케치-3D 변환-로봇 표면 추종 pipeline 을 실로봇에서 안전하게 검증하는 것. 용접 토치 전환은 이 흐름이 안정화된 뒤 진행한다.
 
 **일감 1 — 시뮬 ZED 통합 (옵션 C, 2026-05-21):** ✅
 - 시도 A (zed-isaac-sim sl.sensor.camera streamer + zed-ros2-wrapper sim_mode):
@@ -392,20 +407,35 @@ ROS2 Camera Helper 로 우회 — sim/real 의 interface (topic, frame, intrinsi
     Andreff/Daniilidis) 별 sim ground truth vs estimate 오차 정량 비교.
 - **2.4 진행** apriltag_ros detector launch + detection 확인.
   - AprilTag prim: TCP local +Z 6cm, identity 회전 (link6 박힘 회피).
-  - Robot pose 분리: `WORK_POSE` (roller -Y, wall 향함, weld 작업 시) vs `CALIB_POSE`
+  - Robot pose 분리: `WORK_POSE` (roller -Y, wall 향함, 롤러 작업 시) vs `CALIB_POSE`
     (TCP world-X +90° rotation → roller world+Z, AprilTag world+Y camera face-on).
   - `READY_POSE_DICT = CALIB_POSE` 로 calibration phase 시작. 일감 2.5 완료 후
-    한 줄 `READY_POSE_DICT = WORK_POSE` 변경으로 weld 작업 pose 복귀.
+    한 줄 `READY_POSE_DICT = WORK_POSE` 변경으로 롤러 작업 pose 복귀.
   - `CALIB_DELTA = (wrist_name, ±1)` constant — 4 candidate (wrist1±π/2,
     wrist2±π/2) 시각 검증으로 정답 결정. URDF wrist 축 wrist1=(0,1,0),
     wrist2=(0,0,1), wrist3=(0,1,0) — 직접 IK 없이 empirical fix.
-- 2.5 *(다음 핸드오버)* Calibration script: CALIB_POSE 기준 ±N variation 으로
-  robot 20 pose 이동 + `cv2.calibrateHandEye()`.
+- **2.5 진행** Calibration script — eye-to-hand.
+  - 신규: `src/sketch_control/sketch_control/calibration_handeye.py`
+    (`ros2 run sketch_control calibration_handeye` 또는 `python3 ...py` 둘 다 OK).
+  - 흐름: `/joint_states` 의 현재 pose 를 base → wrist1/2/3 axis-aligned ±0.10/±0.20
+    (12 pose) + random multi-wrist variation (~8 pose) = 20 pose 생성 →
+    각 pose 에서 `/joint_command` (JointState) 발행 → settling 1.5s + 10-sample
+    corner average → `cv2.solvePnP(IPPE_SQUARE)` 로 cam→tag pose 산출 →
+    `/tf` link0↔tcp lookup 으로 base→tcp FK 수집 → `cv2.calibrateHandEye(DANIILIDIS)`
+    로 `T_cam→base` 단일 추정 (5 method 비교 X).
+  - Sanity check: ground_truth.json 의 `camera_optical_world_pose` ×
+    `inv(robot_base_world_pose)` 와 비교 → translation_error_mm + rotation_error_deg.
+    `< 1mm` 면 ✅, `1~5mm` borderline, `>5mm` setup fail.
+  - 출력: `~/sketch_robot_ws/calibration_results.json` + console 표 +
+    `static_transform_publisher` 명령 한 줄 출력 (TF tree 등록용).
+  - ground_truth.json 의 `robot_base_world_pose` 가 null 일 수 있는 케이스
+    (ARTICULATION_PATH 가 비-Xformable) — isaac_sim_rb10.py 수정으로 RB10_PRIM_PATH
+    fallback 추가 (실제 -90° Z 회전 포함).
 
 **남은 일감:**
 - 일감 3: 시뮬 RANSAC 평면 인식 → `/perception/wall_plane` 재검증 (native depth 기반)
 - 일감 4: snucem 에 sketch_robot_ws 복제 + 실 ZED 2i 연결 + 실 환경 측정
-- 일감 5: 시뮬에서 검증된 흐름 (wall_detector → wall_projector → sketch UI →
+- 일감 5: 시뮬에서 검증된 롤러 흐름 (wall_detector → wall_projector → sketch UI →
   sketch_to_waypoints → moveit_executor) 실로봇 적용
 - 일감 6: 안전 검증 — 속도 제한 (0.1×), 단계적 검증 (Stage 1 단독 → 1~2 → 전체)
 

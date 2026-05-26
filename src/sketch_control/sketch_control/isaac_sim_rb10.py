@@ -1034,7 +1034,14 @@ _gt = {
     },
     "camera_optical_world_pose": _world_pose_dict(_LEFT_CAM),
     "camera_right_optical_world_pose": _world_pose_dict(_RIGHT_CAM),
-    "robot_base_world_pose": _world_pose_dict(ARTICULATION_PATH),
+    # ARTICULATION_PATH 가 비-Xformable (RigidBody 내부 prim) 이면 None 가능 →
+    # RB10 root (/World/rb10) 의 world pose 로 fallback. /World/rb10 은 Xform 이고
+    # -90° Z 회전이 authored 되어 있어 실제 link0 world pose 와 일치. 최후엔 identity.
+    "robot_base_world_pose": (
+        _world_pose_dict(ARTICULATION_PATH)
+        or _world_pose_dict(RB10_PRIM_PATH)
+        or {"translation": [0.0, 0.0, 0.0], "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    ),
     "apriltag": {
         "tcp_local_pose": {
             "translation": list(APRILTAG_TCP_OFFSET),
