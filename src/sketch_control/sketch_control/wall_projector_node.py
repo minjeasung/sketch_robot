@@ -6,7 +6,6 @@ wall_projector_node — ZED RGB + 선택된 target surface → 작업영역 정�
   /zed/zed_node/rgb/color/rect/camera_info       (sensor_msgs/CameraInfo)  — K 매트릭스
   /perception/target_surface            (geometry_msgs/PoseStamped)
                                          — sketch 기반 target surface
-  /perception/wall_plane                fallback target surface
   /work_area_pixels                     optional sketch 기반 작업영역
 
 출력:
@@ -15,7 +14,7 @@ wall_projector_node — ZED RGB + 선택된 target surface → 작업영역 정�
   /perception/work_area_corners        (geometry_msgs/PoseArray, TL/TR/BR/BL)
 
 알고리즘:
-  1. wall plane parameters (centroid, normal — zed_left_camera_frame)
+  1. target/work area plane parameters (centroid, normal — zed_left_camera_frame)
      normal = quaternion 이 +Z 를 회전시킨 vector
   2. wall plane 위 right/up axes 정의 (camera +Y down 기준 horizontal/vertical)
   3. 4 꼭짓점 (centroid ± W/2 right ± H/2 up) — 작업 영역
@@ -38,13 +37,15 @@ INPUT_IMAGE_TOPIC = "/zed/zed_node/rgb/color/rect/image"
 INPUT_INFO_TOPIC = "/zed/zed_node/rgb/color/rect/camera_info"
 INPUT_WALL_TOPIC = "/perception/wall_plane"
 INPUT_TARGET_TOPIC = "/perception/target_surface"
+INPUT_REFINED_WORK_AREA_TOPIC = "/perception/work_area_plane_refined"
 WORK_AREA_PIXELS_TOPIC = "/work_area_pixels"
 OUTPUT_TOPIC = "/perception/wall_front_view"
 WORK_AREA_TOPIC = "/perception/work_area_plane"
 WORK_AREA_CORNERS_TOPIC = "/perception/work_area_corners"
 
-OUTPUT_W = 800   # 가상 정면 view 픽셀
-OUTPUT_H = 800
+OUTPUT_LONG_EDGE = 900   # 가상 정면 view 의 긴 변 픽셀
+OUTPUT_MIN_EDGE = 360
+OUTPUT_MAX_EDGE = 1200
 
 WALL_RECT_W = 0.5  # 벽 평면 위 작업 영역 (m)
 WALL_RECT_H = 0.4
@@ -198,10 +199,16 @@ class WallProjectorNode(Node):
             Image, INPUT_IMAGE_TOPIC, self._on_image, qos_profile_sensor_data)
         self.create_subscription(
             CameraInfo, INPUT_INFO_TOPIC, self._on_info, qos_profile_sensor_data)
+        self.declare_parameter("allow_wall_fallback", False)
+        self.allow_wall_fallback = bool(
+            self.get_parameter("allow_wall_fallback").value)
         self.create_subscription(
             PoseStamped, INPUT_WALL_TOPIC, self._on_wall, 10)
         self.create_subscription(
             PoseStamped, INPUT_TARGET_TOPIC, self._on_target_surface, LATCHED_QOS)
+        self.create_subscription(
+            PoseStamped, INPUT_REFINED_WORK_AREA_TOPIC,
+            self._on_refined_work_area, LATCHED_QOS)
         self.create_subscription(
             PoseArray, WORK_AREA_PIXELS_TOPIC, self._on_work_area_pixels, 10)
         self.front_pub = self.create_publisher(Image, OUTPUT_TOPIC, 10)
@@ -222,9 +229,11 @@ class WallProjectorNode(Node):
             f"wall_projector_node 시작\n"
             f"  in : {INPUT_IMAGE_TOPIC}\n"
             f"       {INPUT_INFO_TOPIC}\n"
-            f"       {INPUT_TARGET_TOPIC} (fallback={INPUT_WALL_TOPIC})\n"
+            f"       {INPUT_TARGET_TOPIC}"
+            f" (wall fallback={'on' if self.allow_wall_fallback else 'off'})\n"
+            f"       {INPUT_REFINED_WORK_AREA_TOPIC} (D405 refined)\n"
             f"       {WORK_AREA_PIXELS_TOPIC}\n"
-            f"  out: {OUTPUT_TOPIC}  ({OUTPUT_W}×{OUTPUT_H}, "
+            f"  out: {OUTPUT_TOPIC}  (physical aspect-ratio preserving, "
             f"yellow/sketch work area)\n"
             f"       {WORK_AREA_TOPIC}, {WORK_AREA_CORNERS_TOPIC}")
 
@@ -232,6 +241,8 @@ class WallProjectorNode(Node):
         self.K = np.array(msg.k, dtype=float).reshape(3, 3)
 
     def _on_wall(self, msg: PoseStamped):
+        if not self.allow_wall_fallback:
+            return
         if self.latest_surface is not None and self.latest_surface[3] == "target":
             return
         self._cache_surface(msg, "wall")
@@ -239,6 +250,63 @@ class WallProjectorNode(Node):
     def _on_target_surface(self, msg: PoseStamped):
         self._clear_locked_work_area("target surface updated")
         self._cache_surface(msg, "target")
+
+    def _on_refined_work_area(self, msg: PoseStamped):
+        if (
+            self.locked_work_area is not None
+            and self.locked_work_area.get("d405_refined_locked", False)
+        ):
+            self.get_logger().info(
+                "D405 refined plane 추가 갱신 무시 — work_area 는 이미 lock 됨",
+                throttle_duration_sec=3.0)
+            return
+
+        frame_id = msg.header.frame_id or "zed_left_camera_frame"
+        refined_point = np.array([
+            msg.pose.position.x,
+            msg.pose.position.y,
+            msg.pose.position.z,
+        ], dtype=float)
+        refined_normal = _quat_z_axis(msg.pose.orientation)
+        n_norm = float(np.linalg.norm(refined_normal))
+        if n_norm < 1e-6:
+            return
+        refined_normal /= n_norm
+        self.latest_surface = (
+            refined_point, refined_normal, frame_id, "d405_refined")
+
+        if self.locked_work_area is None:
+            return
+        if self.locked_work_area.get("frame_id") != frame_id:
+            self.get_logger().warn(
+                "D405 refined frame 이 locked work area 와 달라서 skip: "
+                f"{frame_id} != {self.locked_work_area.get('frame_id')}",
+                throttle_duration_sec=2.0)
+            return
+
+        corners = np.asarray(
+            self.locked_work_area["corners_3d"], dtype=float)
+        signed = (corners - refined_point) @ refined_normal
+        corners_refined = corners - signed[:, None] * refined_normal
+        self.locked_work_area["corners_3d"] = corners_refined
+        self.locked_work_area["normal"] = refined_normal.copy()
+        src_updated = False
+        if self.K is not None:
+            src_refined = _project_points(corners_refined, self.K)
+            if (
+                src_refined is not None
+                and np.all(np.isfinite(src_refined))
+            ):
+                self.locked_work_area["src_pts"] = src_refined.astype(
+                    np.float32)
+                src_updated = True
+        base_mode = self.locked_work_area.get("base_mode", "work_area")
+        self.locked_work_area["mode"] = f"locked:{base_mode}+d405_refined"
+        self.locked_work_area["d405_refined_locked"] = True
+        self.get_logger().info(
+            "work_area lock 을 D405 refined plane 으로 보정 "
+            f"(shift mean={float(np.mean(signed))*1000:+.1f}mm, "
+            f"image_src={'updated' if src_updated else 'kept'}, locked=true)")
 
     def _cache_surface(self, msg: PoseStamped, source: str):
         centroid = np.array([
@@ -312,7 +380,9 @@ class WallProjectorNode(Node):
                     "corners_3d": np.asarray(corners_3d, dtype=float).copy(),
                     "normal": np.asarray(normal, dtype=float).copy(),
                     "frame_id": _frame,
+                    "base_mode": mode,
                     "mode": f"locked:{mode}",
+                    "d405_refined_locked": False,
                 }
                 mode = self.locked_work_area["mode"]
                 self.get_logger().info(
@@ -326,7 +396,7 @@ class WallProjectorNode(Node):
                 if self._yellow_warn_count % 30 == 1:
                     self.get_logger().warn(
                         "work area 미지정 — ZED Raw 에서 Work Area 를 그리거나 "
-                        "노란 사각형을 보여주세요")
+                        "Work Area sketch 주변의 노란 사각형을 보조로 사용하세요")
             else:
                 self._yellow_warn_count += 1
                 if self._yellow_warn_count % 30 == 1:
@@ -335,18 +405,19 @@ class WallProjectorNode(Node):
             return
         self._yellow_warn_count = 0
         work_center = corners_3d.mean(axis=0)
+        out_w, out_h, physical_w, physical_h = self._front_view_size(corners_3d)
 
         dst_pts = np.array([
             [0.0,            0.0],
-            [OUTPUT_W - 1.0, 0.0],
-            [OUTPUT_W - 1.0, OUTPUT_H - 1.0],
-            [0.0,            OUTPUT_H - 1.0],
+            [out_w - 1.0,    0.0],
+            [out_w - 1.0,    out_h - 1.0],
+            [0.0,            out_h - 1.0],
         ], dtype=np.float32)
 
         try:
             H = cv2.getPerspectiveTransform(src_pts, dst_pts)
             front = cv2.warpPerspective(
-                rgb, H, (OUTPUT_W, OUTPUT_H),
+                rgb, H, (out_w, out_h),
                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
         except Exception as e:
             self.get_logger().warn(f"warpPerspective 실패: {e}")
@@ -371,8 +442,44 @@ class WallProjectorNode(Node):
 
         self.get_logger().info(
             f"front_view/work_area publish ({mode}, surface={source}) "
+            f"view={out_w}x{out_h}, physical={physical_w:.3f}x{physical_h:.3f}m, "
             f"center=({work_center[0]:+.3f},{work_center[1]:+.3f},"
             f"{work_center[2]:+.3f})")
+
+    def _front_view_size(self, corners_3d):
+        pts = np.asarray(corners_3d, dtype=float)
+        tl, tr, br, bl = pts[:4]
+        physical_w = 0.5 * (
+            float(np.linalg.norm(tr - tl)) +
+            float(np.linalg.norm(br - bl))
+        )
+        physical_h = 0.5 * (
+            float(np.linalg.norm(bl - tl)) +
+            float(np.linalg.norm(br - tr))
+        )
+        if physical_w < 1e-4 or physical_h < 1e-4:
+            physical_w = WALL_RECT_W
+            physical_h = WALL_RECT_H
+
+        aspect = float(np.clip(
+            physical_w / max(physical_h, 1e-6),
+            0.20,
+            5.00,
+        ))
+        if aspect >= 1.0:
+            out_w = OUTPUT_LONG_EDGE
+            out_h = int(round(OUTPUT_LONG_EDGE / aspect))
+        else:
+            out_h = OUTPUT_LONG_EDGE
+            out_w = int(round(OUTPUT_LONG_EDGE * aspect))
+
+        out_w = int(np.clip(out_w, OUTPUT_MIN_EDGE, OUTPUT_MAX_EDGE))
+        out_h = int(np.clip(out_h, OUTPUT_MIN_EDGE, OUTPUT_MAX_EDGE))
+        # Even dimensions are friendlier for browser/video tooling and avoid
+        # tiny flicker from one-pixel aspect rounding.
+        out_w = max(2, int(round(out_w / 2.0) * 2))
+        out_h = max(2, int(round(out_h / 2.0) * 2))
+        return out_w, out_h, physical_w, physical_h
 
     def _choose_work_area(self, rgb, centroid, normal):
         if self.latest_work_area_pixels is not None:
@@ -385,12 +492,6 @@ class WallProjectorNode(Node):
             result = self._work_area_from_sketch(centroid, normal)
             if result[0] is not None:
                 return result[0], result[1], "sketch-fallback"
-
-        src_pts, area = _detect_yellow_quad(rgb)
-        if src_pts is not None:
-            corners = self._corners_from_pixels(src_pts, centroid, normal)
-            if corners is not None:
-                return src_pts, corners, f"yellow(area={area:.0f}px)"
 
         return None, None, "none"
 

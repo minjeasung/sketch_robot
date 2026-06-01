@@ -7,6 +7,8 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     use_sim_depth_pointcloud = LaunchConfiguration("use_sim_depth_pointcloud")
+    use_sim_d405_depth_pointcloud = LaunchConfiguration(
+        "use_sim_d405_depth_pointcloud")
     use_d405_refinement = LaunchConfiguration("use_d405_refinement")
     use_d405_mount_tf = LaunchConfiguration("use_d405_mount_tf")
     use_ft_normal_controller = LaunchConfiguration("use_ft_normal_controller")
@@ -64,12 +66,47 @@ def generate_launch_description():
         ],
     )
 
+    static_d405_optical_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="d405_optical_static_tf",
+        output="screen",
+        condition=IfCondition(use_d405_mount_tf),
+        arguments=[
+            "--frame-id", "d405_link",
+            "--child-frame-id", "d405_color_optical_frame",
+            "--x", "0.0",
+            "--y", "0.0",
+            "--z", "0.0",
+            "--qx", "-0.5",
+            "--qy", "0.5",
+            "--qz", "-0.5",
+            "--qw", "0.5",
+        ],
+    )
+
     depth_to_pointcloud = Node(
         package="sketch_control",
         executable="depth_to_pointcloud",
         name="depth_to_pointcloud",
         output="screen",
         condition=IfCondition(use_sim_depth_pointcloud),
+    )
+
+    d405_depth_to_pointcloud = Node(
+        package="sketch_control",
+        executable="depth_to_pointcloud",
+        name="d405_depth_to_pointcloud",
+        output="screen",
+        condition=IfCondition(use_sim_d405_depth_pointcloud),
+        parameters=[{
+            "depth_topic": "/d405/d405/depth/image_rect_raw",
+            "camera_info_topic": "/d405/d405/depth/camera_info",
+            "point_cloud_topic": "/d405/d405/depth/color/points",
+            "stride": 2,
+            "min_depth_m": 0.05,
+            "max_depth_m": 1.2,
+        }],
     )
 
     wall_detector = Node(
@@ -115,6 +152,12 @@ def generate_launch_description():
         condition=IfCondition(use_d405_refinement),
         parameters=[{
             "cloud_topic": d405_cloud_topic,
+            "require_capture_trigger": True,
+            "spatial_samples": 3,
+            "max_spatial_samples": 5,
+            "spatial_sample_separation_m": 0.045,
+            "max_fit_residual_m": 0.012,
+            "stable_normal_spread_deg": 5.0,
         }],
     )
 
@@ -139,6 +182,11 @@ def generate_launch_description():
             "use_sim_depth_pointcloud",
             default_value="true",
             description="Isaac Sim depth image -> ZED-compatible PointCloud2",
+        ),
+        DeclareLaunchArgument(
+            "use_sim_d405_depth_pointcloud",
+            default_value="true",
+            description="Isaac Sim D405 depth image -> D405 PointCloud2",
         ),
         DeclareLaunchArgument(
             "use_d405_refinement",
@@ -189,7 +237,9 @@ def generate_launch_description():
         DeclareLaunchArgument("zed_qw", default_value="0.36781468650800403"),
         static_zed_tf,
         static_d405_mount_tf,
+        static_d405_optical_tf,
         depth_to_pointcloud,
+        d405_depth_to_pointcloud,
         wall_detector,
         target_selector,
         wall_projector,

@@ -40,7 +40,7 @@
   </joint>
   <!-- camera body, with origin at bottom screw mount -->
   <joint name="d405_joint" type="fixed">
-    <origin rpy="0 -1.57079632679 -1.57079632679" xyz="0.00905 0.04375 -0.09105"/>
+    <origin rpy="0 -1.57079632679 -1.57079632679" xyz="5e-05 0.02275 -0.1019"/>
     <parent link="eoat_no_camera_link"/>
     <child link="d405_bottom_screw_frame"/>
   </joint>

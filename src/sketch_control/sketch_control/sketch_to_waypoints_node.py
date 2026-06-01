@@ -19,8 +19,7 @@ sketch_to_waypoints_node — 브라우저 (u, v) → world 3D waypoints.
   1) work area plane 의 centroid/normal 을 world frame 으로 변환 (TF + +Z axis rotation)
   2) wall plane 위 right/up 직교 기저 (world frame) 계산
   3) (u, v) → wall plane 위 롤러 중심점:
-       x_plane = (u/VIEW_W - 0.5) * WALL_W
-       y_plane = (v/VIEW_H - 0.5) * WALL_H   (v 증가 = down → up 부호 반전)
+       wall_front Image 의 현재 width/height 로 정규화한다.
        p_world = centroid_world + normal*(roller_radius+clearance)
                  + right*x_plane - up*y_plane
   4) EE orientation: tcp local -Y = -normal_world (AFT200+roller EOAT 가 벽 접근)
@@ -31,10 +30,16 @@ import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
 from rclpy.time import Time
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    qos_profile_sensor_data,
+)
 
 from tf2_ros import Buffer, TransformListener, TransformException
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped, Point
+from sensor_msgs.msg import Image
 from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from sketch_control.rotation_utils import quat_from_matrix, quat_to_matrix
@@ -45,6 +50,7 @@ SKETCH_PIXELS_TOPIC = "/sketch_pixels"
 WORK_AREA_TOPIC = "/perception/work_area_plane"
 WORK_AREA_REFINED_TOPIC = "/perception/work_area_plane_refined"
 WORK_AREA_CORNERS_TOPIC = "/perception/work_area_corners"
+WALL_FRONT_IMAGE_TOPIC = "/perception/wall_front_view"
 WAYPOINTS_TOPIC = "/sketch_waypoints"
 MARKERS_TOPIC = "/sketch_markers"
 
@@ -57,18 +63,20 @@ LATCHED_QOS = QoSProfile(
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 
-# wall_projector_node 와 일치해야 함 (벽 평면 영역 + 가상 view 해상도)
+# wall_projector_node 와 일치해야 함. view 해상도는 wall_front Image 를
+# 구독해서 동적으로 맞춘다. 아래 값은 첫 이미지 수신 전 fallback.
 WALL_W = 0.5     # m
 WALL_H = 0.4     # m
-VIEW_W = 800     # px
-VIEW_H = 800     # px
+DEFAULT_VIEW_W = 800     # px
+DEFAULT_VIEW_H = 800     # px
 
 # Sketch waypoint semantic: roller rotation-axis center.
 # 실제 벽 표면점이 아니라, 롤러 반지름 + 소량 clearance 만큼 free-space 쪽에 둔다.
 # 이렇게 해야 MoveIt collision world 에서 벽을 뚫지 않고 "거의 접촉" 경로가 된다.
-ROLLER_RADIUS = 0.025
-CONTACT_CLEARANCE = 0.002
+ROLLER_RADIUS = 0.0385
+CONTACT_CLEARANCE = 0.005
 EOAT_SURFACE_OFFSET = ROLLER_RADIUS + CONTACT_CLEARANCE
+D405_REFINED_WORK_AREA_HOLD_SEC = 30.0
 
 
 def _quat_to_rot(qx, qy, qz, qw):
@@ -106,6 +114,8 @@ class SketchToWaypointsNode(Node):
         self.latest_refined_work_area = None  # PoseStamped refined by wrist D405
         self.latest_refined_work_area_time = 0.0
         self.latest_work_area_corners = None
+        self.view_w = DEFAULT_VIEW_W
+        self.view_h = DEFAULT_VIEW_H
 
         self.create_subscription(
             PoseStamped, WORK_AREA_TOPIC, self._on_work_area, LATCHED_QOS)
@@ -114,6 +124,9 @@ class SketchToWaypointsNode(Node):
             self._on_refined_work_area, LATCHED_QOS)
         self.create_subscription(
             PoseArray, WORK_AREA_CORNERS_TOPIC, self._on_work_area_corners, LATCHED_QOS)
+        self.create_subscription(
+            Image, WALL_FRONT_IMAGE_TOPIC, self._on_wall_front_image,
+            qos_profile_sensor_data)
         self.create_subscription(
             PoseArray, SKETCH_PIXELS_TOPIC, self._on_sketch, 10)
         self.pub = self.create_publisher(PoseArray, WAYPOINTS_TOPIC, 10)
@@ -129,7 +142,7 @@ class SketchToWaypointsNode(Node):
             f"  sketch: {SKETCH_PIXELS_TOPIC}\n"
             f"  out   : {WAYPOINTS_TOPIC} (frame={WORLD_FRAME})\n"
             f"          {MARKERS_TOPIC} (MarkerArray, 같은 frame)\n"
-            f"  wall rect {WALL_W}×{WALL_H} m ↔ view {VIEW_W}×{VIEW_H} px")
+            f"  wall_front image size is tracked dynamically")
 
     # ---- callbacks ----
     def _on_work_area(self, msg: PoseStamped):
@@ -142,7 +155,8 @@ class SketchToWaypointsNode(Node):
     def _current_work_area(self):
         if (
             self.latest_refined_work_area is not None
-            and time.monotonic() - self.latest_refined_work_area_time <= 2.0
+            and time.monotonic() - self.latest_refined_work_area_time
+            <= D405_REFINED_WORK_AREA_HOLD_SEC
         ):
             return self.latest_refined_work_area, "d405_refined"
         return self.latest_work_area, "zed"
@@ -150,6 +164,15 @@ class SketchToWaypointsNode(Node):
     def _on_work_area_corners(self, msg: PoseArray):
         if len(msg.poses) >= 4:
             self.latest_work_area_corners = msg
+
+    def _on_wall_front_image(self, msg: Image):
+        if msg.width <= 0 or msg.height <= 0:
+            return
+        if msg.width != self.view_w or msg.height != self.view_h:
+            self.view_w = int(msg.width)
+            self.view_h = int(msg.height)
+            self.get_logger().info(
+                f"wall_front view size 갱신: {self.view_w}x{self.view_h}")
 
     def _on_sketch(self, msg: PoseArray):
         view = msg.header.frame_id or ""
@@ -226,6 +249,8 @@ class SketchToWaypointsNode(Node):
         out = PoseArray()
         out.header.stamp = self.get_clock().now().to_msg()
         out.header.frame_id = WORLD_FRAME
+        view_w = max(int(self.view_w), 1)
+        view_h = max(int(self.view_h), 1)
 
         # Roller center: wall surface 에서 normal/free-space 방향으로
         # ROLLER_RADIUS + CONTACT_CLEARANCE 만큼 떨어진 평면.
@@ -236,8 +261,8 @@ class SketchToWaypointsNode(Node):
             if corners_world is not None:
                 p_surface = self._bilinear_point(corners_world, u, v)
             else:
-                x_plane = (u / VIEW_W - 0.5) * WALL_W
-                y_plane = (v / VIEW_H - 0.5) * WALL_H
+                x_plane = (u / view_w - 0.5) * WALL_W
+                y_plane = (v / view_h - 0.5) * WALL_H
                 # v 픽셀 ↓ = wall up axis 와 반대
                 p_surface = cent_world + right * x_plane - up * y_plane
             p_world = p_surface + surface_offset
@@ -324,11 +349,10 @@ class SketchToWaypointsNode(Node):
             pts.append((T_wc @ p)[:3])
         return np.asarray(pts, dtype=float)
 
-    @staticmethod
-    def _bilinear_point(corners, u, v):
+    def _bilinear_point(self, corners, u, v):
         # corners: TL, TR, BR, BL. wall_front pixel: u right, v down.
-        su = float(np.clip(u / max(VIEW_W - 1, 1), 0.0, 1.0))
-        sv = float(np.clip(v / max(VIEW_H - 1, 1), 0.0, 1.0))
+        su = float(np.clip(u / max(self.view_w - 1, 1), 0.0, 1.0))
+        sv = float(np.clip(v / max(self.view_h - 1, 1), 0.0, 1.0))
         tl, tr, br, bl = corners
         top = tl + (tr - tl) * su
         bottom = bl + (br - bl) * su

@@ -54,4 +54,9 @@
     <disable_collisions link1="link4" link2="link5" reason="Adjacent"/>
     <disable_collisions link1="link4" link2="link6" reason="Never"/>
     <disable_collisions link1="link5" link2="link6" reason="Adjacent"/>
+    <disable_collisions link1="link6" link2="aft200_link" reason="Adjacent EOAT mount"/>
+    <disable_collisions link1="link6" link2="paint_eoat_no_camera_link" reason="Adjacent EOAT mount"/>
+    <disable_collisions link1="link6" link2="paint_d405_link" reason="Adjacent EOAT mount"/>
+    <disable_collisions link1="aft200_link" link2="paint_eoat_no_camera_link" reason="Adjacent EOAT assembly"/>
+    <disable_collisions link1="paint_eoat_no_camera_link" link2="paint_d405_link" reason="Adjacent EOAT assembly"/>
 </robot>

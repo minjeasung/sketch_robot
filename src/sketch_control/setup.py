@@ -14,6 +14,7 @@ setup(
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/config', glob('config/*.rviz')),
         ('share/' + package_name + '/config', glob('config/*.srdf')),
+        ('share/' + package_name + '/urdf', glob('urdf/*.xacro')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

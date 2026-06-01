@@ -53,6 +53,7 @@ from sketch_control.targets import (
 )
 from sketch_control.rotation_utils import (
     quat_apply, quat_from_matrix, quat_from_two_vectors, quat_multiply,
+    quat_to_matrix,
 )
 
 
@@ -61,11 +62,30 @@ PLANNING_GROUP = "mainpulation"
 EE_LINK = "tcp"
 BASE_FRAME = "link0"
 
-CONTACT_CLEARANCE = 0.002  # MoveIt 상에서는 벽과 2mm clearance 유지
+CONTACT_CLEARANCE = 0.005  # MoveIt 상에서는 벽과 5mm clearance 유지
 CONTACT_PLANE_TOL = 0.015  # perception/TF noise 허용 범위
 WORK_AREA_W = 0.50
 WORK_AREA_H = 0.40
 WORK_AREA_MARGIN = 0.02
+D405_REFINED_SURFACE_HOLD_SEC = 30.0
+D405_PREFLIGHT_SCAN_ENABLED = True
+D405_PREFLIGHT_REQUIRE_REFINED = False
+D405_PREFLIGHT_SCAN_STANDOFF = 0.32
+D405_PREFLIGHT_SCAN_SETTLE_SEC = 1.0
+D405_PREFLIGHT_SCAN_TIMEOUT_SEC = 4.0
+D405_PREFLIGHT_SCAN_INSET_M = 0.08
+D405_PREFLIGHT_SPEED_SCALE = 0.025
+# D405 prescan 은 현재 자세에서 가까운 점부터 작은 tangent probing 을 수행한다.
+# 큰 관절 우회해를 타면 EOAT/D405 충돌 위험이 커지므로 계획 결과는 아래
+# joint-space guard 로 버린다.
+D405_PREFLIGHT_SCAN_MAX_POSES = 5
+D405_PREFLIGHT_PROBE_OFFSET_M = 0.06
+D405_PREFLIGHT_MAX_JOINT_PATH_RAD = 1.8
+D405_PREFLIGHT_MAX_START_GOAL_DELTA_RAD = 0.9
+D405_PREFLIGHT_MAX_PLAN_POINTS = 260
+D405_PREFLIGHT_CARTESIAN_FRACTION = 0.95
+MOTION_ABORT_TOPIC = "/motion_abort"
+D405_REFINE_CAPTURE_TOPIC = "/d405/refine_capture"
 
 SAFETY_OFFSET = 0.08   # 접촉 전 normal 방향 안전거리
 RETREAT_OFFSET = 0.08  # Stage 4 후퇴점: 표면 normal 방향 8cm
@@ -76,15 +96,19 @@ WORLD_COLLISION_PADDING = 0.02
 TARGET_COLLISION_MARGIN = 0.20
 TARGET_COLLISION_MIN_THICKNESS = 0.02
 TARGET_COLLISION_MAX_THICKNESS = 0.08
+TARGET_COLLISION_USE_NOMINAL_EXTENT_AFTER_D405 = False
 OBSTACLES_TOPIC = "/perception/obstacles"
 PLANES_TOPIC = "/perception/planes"
 PLANE_LABELS_TOPIC = "/perception/plane_labels"
 WORK_AREA_PLANE_TOPIC = "/perception/work_area_plane"
 WORK_AREA_REFINED_PLANE_TOPIC = "/perception/work_area_plane_refined"
 WORK_AREA_CORNERS_TOPIC = "/perception/work_area_corners"
+REFINE_WORK_AREA_TOPIC = "/refine_work_area"
+WORK_AREA_REFINE_STATUS_TOPIC = "/work_area_refine_status"
 FT_STATUS_TOPIC = "/ft/status"
 FT_ZERO_TOPIC = "/ft/zero"
-JOINT_COMMAND_TOPIC = "/joint_command"
+DEFAULT_JOINT_COMMAND_TOPIC = "/isaac_joint_command"
+DEFAULT_FOLLOW_JOINT_TRAJECTORY_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 MAX_DYNAMIC_OBSTACLES = 80
 DYNAMIC_OBSTACLE_PREFIX = "zed_obstacle_"
 ROBOT_SELF_FILTER_PADDING = 0.10
@@ -101,6 +125,8 @@ ROBOT_LINK_CAPSULE_RADIUS = {
 PLANNER_ID = "RRTConnect"
 ALLOWED_PLANNING_TIME = 5.0
 PLANNING_ATTEMPTS = 5
+SCENE_WAIT_TIMEOUT_SEC = 5.0
+SCENE_WAIT_PERIOD_SEC = 0.2
 
 LATCHED_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
@@ -111,14 +137,19 @@ LATCHED_QOS = QoSProfile(
 # Runtime speed policy.
 # Stage 1 is intentionally slow: it is the longest free-space move near humans
 # and can otherwise look abrupt on the real RB10.
-STAGE1_SPEED_SCALE = 0.10
-STAGE2_SPEED_SCALE = 0.08
-STAGE3_SPEED_SCALE = 0.25
-STAGE4_SPEED_SCALE = 0.10
-STAGE5_SPEED_SCALE = 0.20
+STAGE1_SPEED_SCALE = 0.025
+STAGE2_SPEED_SCALE = 0.020
+STAGE3_SPEED_SCALE = 0.060
+STAGE4_SPEED_SCALE = 0.025
+STAGE5_SPEED_SCALE = 0.040
 STAGE1_IK_TIMEOUT_S = 1.0
 STAGE1_JOINT_GOAL_TOL = 0.02
 STAGE1_LARGE_JOINT_DELTA_WARN_RAD = 1.2
+STAGE1_MAX_SINGLE_JOINT_DELTA_RAD = math.radians(85.0)
+STAGE1_MAX_START_GOAL_DELTA_RAD = math.radians(90.0)
+STAGE1_MAX_JOINT_PATH_RAD = 2.4
+STAGE1_MAX_PLAN_POINTS = 300
+STAGE1_CARTESIAN_FRACTION = 0.95
 FT_FORCE_STALE_SEC = 0.75
 FT_ABORT_FORCE_N = 30.0
 FT_AUTO_ZERO_BEFORE_SKETCH = True
@@ -126,8 +157,9 @@ FT_AUTO_ZERO_TIMEOUT_SEC = 6.0
 FT_AUTO_ZERO_STALE_SEC = 1.0
 FT_AUTO_ZERO_CHECK_PERIOD = 0.05
 
-# 스케치 시작 전에는 시야/해 안정화를 위해 READY_POSE 에서 시작한다.
-START_FROM_READY_BEFORE_SKETCH = True
+# 스케치 시작 전 READY_POSE 강제 복귀는 큰 관절 회전을 만들 수 있다.
+# 현재 자세에서 첫 safety pose 로 바로 collision-aware plan 한다.
+START_FROM_READY_BEFORE_SKETCH = False
 
 # 작업 종료 후에는 READY_POSE 로 크게 복귀하지 않는다.
 # Stage 4 에서 작업 위치 근처에서 벽 normal 방향으로만 짧게 빠진다.
@@ -148,13 +180,20 @@ JOG_DELTA_RAD = 0.05     # ≈ 2.9°. 시각적으로 보이지만 무시할 수
 JOG_DURATION_SEC = 10.0  # 10초에 걸쳐 움직임 → 인간 반응 충분
 JOG_NUM_POINTS = 50      # 0.2초 간격 보간
 
-# Isaac Sim 의 RB10 OmniGraph 는 /joint_command(sensor_msgs/JointState)를
-# 직접 구독한다. FollowJointTrajectory action 은 실로봇/ros2_control 용으로
-# 남겨두되, 시뮬레이션 기본 실행 backend 는 joint_command 로 둔다.
-EXECUTION_BACKEND = "joint_command"  # "joint_command" or "follow_joint_trajectory"
-# Isaac Sim 에는 FollowJointTrajectory 대신 /joint_command 를 재생한다.
-# 50Hz + trajectory time interpolation 으로 계단형 target jump 를 줄인다.
-JOINT_COMMAND_TIMER_PERIOD = 0.02
+# Isaac Sim 의 RB10 OmniGraph 는 /isaac_joint_command(sensor_msgs/JointState)를
+# 직접 구독한다. 실제 로봇/ros2_control 이 쓰는 /joint_command 와 분리해서
+# 두 publisher 가 같은 Isaac 로봇을 동시에 제어하는 상황을 피한다.
+DEFAULT_EXECUTION_BACKEND = "joint_command"  # "joint_command" or "follow_joint_trajectory"
+# Isaac Sim 에는 FollowJointTrajectory 대신 joint_command_topic 을 재생한다.
+# 100Hz + trajectory time interpolation 으로 계단형 target jump 를 줄인다.
+JOINT_COMMAND_TIMER_PERIOD = 0.01
+JOINT_COMMAND_APPROACH_MAX_SPEED_RAD_S = 0.040
+JOINT_COMMAND_CONTACT_MAX_SPEED_RAD_S = 0.070
+JOINT_COMMAND_DEFAULT_MAX_SPEED_RAD_S = 0.050
+JOINT_COMMAND_MIN_SEGMENT_DT = 0.05
+JOINT_COMMAND_INSERT_START_TOL_RAD = 0.003
+JOINT_COMMAND_SLEW_MULTIPLIER = 1.2
+JOINT_COMMAND_FINAL_TOL_RAD = 0.002
 
 # RB10 joint 운동학 순서 (URDF 기준).
 # 주의: /joint_states 토픽은 알파벳 순으로 발행됨 (base, elbow, shoulder, wrist1, wrist2, wrist3) —
@@ -208,7 +247,7 @@ AFT200_COLLISION_STL_PATH = "/home/minjea/Downloads/aft200_description/meshes/co
 AFT200_SIZE = (0.104, AFT200_LENGTH, 0.082)  # TCP frame box size: x, y, z
 AFT200_CENTER = (-0.0116, -AFT200_LENGTH / 2.0, 0.0)
 
-# RR-00A_B__EOAT.step 의 CAD +Z forward reach. AFT200 뒤에 붙는 롤러 중심까지.
+# RR-00A_B__EOAT.step 의 CAD +Z forward reach.
 EOAT_NO_CAMERA_COLLISION_STL_PATH = (
     "/home/minjea/sketch_robot_ws/src/eoat_description/meshes/"
     "rr_00a_b_eoat_no_camera_collision.stl"
@@ -219,11 +258,11 @@ EOAT_MESH_CENTER_OFFSET = np.array([
     -(AFT200_LENGTH + EOAT_MESH_FORWARD_LENGTH / 2.0),
     0.0,
 ], dtype=float)
-ROLLER_FORWARD_REACH = 0.209475
 ROLLER_SUPPORT_RADIUS = 0.012
-ROLLER_LENGTH = 0.18
-ROLLER_RADIUS = 0.025
+ROLLER_LENGTH = 0.22
+ROLLER_RADIUS = 0.0385
 ROLLER_LONG_AXIS = "+x"  # 벽면 가로(real base Y) 방향.
+ROLLER_FORWARD_REACH = EOAT_MESH_FORWARD_LENGTH - ROLLER_RADIUS
 
 # TCP → 롤러 회전축 중심까지의 거리.
 # Cartesian / IK 가 "tip" 으로 삼는 점 = 롤러 회전축 중심.
@@ -235,6 +274,10 @@ EOAT_TOTAL_REACH = EOAT_TIP_OFFSET
 D405_SIZE = (0.042, 0.023, 0.042)  # TCP frame bbox: x(width), y(depth), z(height)
 D405_COLLISION_CENTER = (0.0, -0.06870, 0.04375)
 
+# EOAT is now part of robot_description as fixed robot links. Keep the runtime
+# attached-object path disabled to avoid duplicate self-collision with the URDF
+# EOAT links.
+PUBLISH_EOAT_ATTACHED_OBJECT = False
 EOAT_TOUCH_LINKS = ["tcp", "link6"]
 
 
@@ -336,9 +379,32 @@ class MoveItExecutor(Node):
     def __init__(self):
         super().__init__("moveit_executor")
 
+        self.execution_backend = str(
+            self.declare_parameter(
+                "execution_backend", DEFAULT_EXECUTION_BACKEND
+            ).value
+        ).strip()
+        if self.execution_backend not in ("joint_command", "follow_joint_trajectory"):
+            self.get_logger().warn(
+                f"unknown execution_backend={self.execution_backend!r}; "
+                f"fallback to {DEFAULT_EXECUTION_BACKEND!r}")
+            self.execution_backend = DEFAULT_EXECUTION_BACKEND
+        self.joint_command_topic = str(
+            self.declare_parameter(
+                "joint_command_topic", DEFAULT_JOINT_COMMAND_TOPIC
+            ).value
+        ).strip()
+        self.follow_joint_trajectory_action = str(
+            self.declare_parameter(
+                "follow_joint_trajectory_action",
+                DEFAULT_FOLLOW_JOINT_TRAJECTORY_ACTION,
+            ).value
+        ).strip()
+
         # I/O
         self.create_subscription(PoseArray, "/sketch_waypoints", self.on_waypoints, 10)
         self.create_subscription(Bool, "/sketch_execute", self.on_execute, 10)
+        self.create_subscription(Bool, MOTION_ABORT_TOPIC, self.on_motion_abort, 10)
         self.create_subscription(JointState, "/joint_states", self.on_joint_state, 10)
         self.create_subscription(
             MarkerArray, OBSTACLES_TOPIC, self.on_dynamic_obstacles, 10)
@@ -353,6 +419,8 @@ class MoveItExecutor(Node):
             self.on_refined_active_surface, LATCHED_QOS)
         self.create_subscription(
             PoseArray, WORK_AREA_CORNERS_TOPIC, self.on_work_area_corners, LATCHED_QOS)
+        self.create_subscription(
+            Bool, REFINE_WORK_AREA_TOPIC, self.on_refine_work_area, 10)
         self.create_subscription(String, FT_STATUS_TOPIC, self.on_ft_status, 10)
         # 디버그용 — 실로봇 검증 시 Stage 5 단독 호출용
         self.create_subscription(
@@ -372,8 +440,12 @@ class MoveItExecutor(Node):
             Bool, "/go_calibration_pose", self.on_go_calibration_pose, 10)
         self.scene_pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
         self.joint_cmd_pub = self.create_publisher(
-            JointState, JOINT_COMMAND_TOPIC, 10)
+            JointState, self.joint_command_topic, 10)
         self.ft_zero_pub = self.create_publisher(Bool, FT_ZERO_TOPIC, 10)
+        self.d405_capture_pub = self.create_publisher(
+            Bool, D405_REFINE_CAPTURE_TOPIC, 10)
+        self.work_area_refine_status_pub = self.create_publisher(
+            String, WORK_AREA_REFINE_STATUS_TOPIC, 10)
 
         # MoveIt endpoints (계획만 사용)
         self.cartesian_client = self.create_client(
@@ -392,8 +464,12 @@ class MoveItExecutor(Node):
         self.traj_action_client = ActionClient(
             self,
             FollowJointTrajectory,
-            "/joint_trajectory_controller/follow_joint_trajectory",
+            self.follow_joint_trajectory_action,
         )
+        self.get_logger().info(
+            f"execution_backend={self.execution_backend}, "
+            f"joint_command_topic={self.joint_command_topic}, "
+            f"follow_joint_trajectory_action={self.follow_joint_trajectory_action}")
 
         # 다음 stage 로 넘기는 데 쓰는 상태
         self._safety_tcp_pose = None
@@ -402,7 +478,29 @@ class MoveItExecutor(Node):
         self._stage3_tip_wps = None
         self._stage1_retried = False
         self._stage1_goal_constraints = None
+        self._stage1_scene_wait_timer = None
+        self._stage1_scene_wait_start = None
         self._joint_goal_context = None
+        self._pose_goal_context = None
+        self._d405_cartesian_context = None
+        self._d405_prescan_active = False
+        self._d405_prescan_queue = []
+        self._d405_prescan_index = 0
+        self._d405_prescan_timer = None
+        self._d405_prescan_wait_start = None
+        self._d405_prescan_arrived_time = 0.0
+        self._d405_prescan_capture_sent = False
+        self._d405_prescan_capture_time = 0.0
+        self._d405_prescan_mode = "sketch"
+        self._d405_refined_generation = 0
+        self._d405_refined_lock_active = False
+        self._d405_refined_lock_time = 0.0
+        self._d405_refined_lock_signature = None
+        self._d405_refined_allow_corner_correction = False
+        self._work_area_refine_wait_timer = None
+        self._work_area_refine_request_time = 0.0
+        self._work_area_refine_previous_corner_signature = None
+        self._motion_abort_requested = False
 
         self.current_waypoints = []
         self.current_joint_state = None
@@ -421,6 +519,7 @@ class MoveItExecutor(Node):
         self.dynamic_surface_source = "fallback"
         self.dynamic_surface_source_time = 0.0
         self.dynamic_work_area_corners = None
+        self._work_area_corners_signature = None
         self._pending_surface_msg = None
         self._pending_surface_source = "zed"
         self._pending_corners_msg = None
@@ -454,7 +553,7 @@ class MoveItExecutor(Node):
 
         self.get_logger().info(
             f"MoveIt Executor 노드 시작 "
-            f"(planning=MoveIt, execution={EXECUTION_BACKEND})")
+            f"(planning=MoveIt, execution={self.execution_backend})")
 
     def _log_current_tcp(self):
         """world → tcp TF 를 주기적으로 로그. 수동 캘리브레이션 시 사용."""
@@ -549,8 +648,17 @@ class MoveItExecutor(Node):
 
     def on_active_surface(self, msg: PoseStamped):
         if (
+            self._d405_refined_lock_active
+            and self.dynamic_surface_source == "d405_refined"
+        ):
+            self.get_logger().info(
+                "[SURFACE] D405 refined plane lock 유지 -> ZED surface 갱신 무시",
+                throttle_duration_sec=2.0)
+            return
+        if (
             self.dynamic_surface_source == "d405_refined"
-            and time.monotonic() - self.dynamic_surface_source_time <= 2.0
+            and time.monotonic() - self.dynamic_surface_source_time
+            <= D405_REFINED_SURFACE_HOLD_SEC
         ):
             return
         if self.executing:
@@ -562,13 +670,31 @@ class MoveItExecutor(Node):
         self._set_active_surface(msg, "zed")
 
     def on_refined_active_surface(self, msg: PoseStamped):
-        if self.executing:
+        if self._d405_refined_lock_active and not self._d405_prescan_active:
+            self.get_logger().info(
+                "[SURFACE] D405 refined plane 이미 lock 됨 -> 추가 refined 갱신 무시",
+                throttle_duration_sec=2.0)
+            return
+        if self.executing and not self._d405_prescan_active:
             self.get_logger().warn(
                 "[SURFACE] 실행 중 D405 refined surface 갱신 무시 "
                 "(다음 plan부터 적용)",
                 throttle_duration_sec=2.0)
             return
+        before_time = self.dynamic_surface_source_time
         self._set_active_surface(msg, "d405_refined")
+        if (
+            self.dynamic_surface_source == "d405_refined"
+            and self.dynamic_surface_source_time != before_time
+        ):
+            self._d405_refined_generation += 1
+            self._d405_refined_lock_active = True
+            self._d405_refined_lock_time = self.dynamic_surface_source_time
+            self._d405_refined_lock_signature = self._work_area_corners_signature
+            self._d405_refined_allow_corner_correction = True
+            self.get_logger().info(
+                "[SURFACE] D405 refined plane lock 활성화 "
+                "(새 Work Area refine 전까지 ZED plane 으로 덮지 않음)")
 
     def _set_active_surface(self, msg: PoseStamped, source: str):
         frame = msg.header.frame_id or BASE_FRAME
@@ -632,7 +758,7 @@ class MoveItExecutor(Node):
         ], dtype=float)
         frame = self._canonical_world_frame(frame)
         if frame == BASE_FRAME:
-            self.dynamic_work_area_corners = pts
+            self._set_dynamic_work_area_corners(pts)
             self.scene_confirmed = False
             self.scene_initialized = False
             return
@@ -645,13 +771,113 @@ class MoveItExecutor(Node):
             return
         t = tf.transform.translation
         q = tf.transform.rotation
-        self.dynamic_work_area_corners = (
+        self._set_dynamic_work_area_corners(
             quat_apply([q.x, q.y, q.z, q.w], pts)
             + np.array([t.x, t.y, t.z])
         )
         self._pending_corners_msg = None
         self.scene_confirmed = False
         self.scene_initialized = False
+
+    def _set_dynamic_work_area_corners(self, pts):
+        pts = np.asarray(pts, dtype=float)
+        signature = tuple(
+            tuple(round(float(v), 3) for v in row)
+            for row in pts[:4]
+        )
+        changed = (
+            self._work_area_corners_signature is not None
+            and signature != self._work_area_corners_signature
+        )
+        self._work_area_corners_signature = signature
+        self.dynamic_work_area_corners = pts
+        if changed and self.dynamic_surface_source == "d405_refined":
+            if (
+                self._d405_refined_lock_active
+                and self._d405_refined_allow_corner_correction
+            ):
+                self._d405_refined_allow_corner_correction = False
+                self._d405_refined_lock_signature = signature
+                self.get_logger().info(
+                    "[SURFACE] D405 lock 상태에서 보정된 work_area corners 1회 반영")
+            else:
+                self._reset_d405_refined_lock(
+                    "work_area_corners_changed", clear_surface=True)
+
+    def on_refine_work_area(self, msg: Bool):
+        if not msg.data:
+            return
+        if self.executing:
+            self.get_logger().warn(
+                "[D405 PRESCAN] 이미 로봇 실행 중 -> work area refine 요청 무시")
+            self._publish_work_area_refine_status("busy")
+            return
+        self._reset_d405_refined_lock(
+            "work_area_refine_requested", clear_surface=False)
+        self._motion_abort_requested = False
+        self._cancel_work_area_refine_wait_timer()
+        self._work_area_refine_request_time = time.monotonic()
+        self._work_area_refine_previous_corner_signature = (
+            self._work_area_corners_signature)
+        self._publish_work_area_refine_status("requested")
+        self._try_begin_work_area_refine()
+
+    def _try_begin_work_area_refine(self):
+        missing = []
+        if self.current_joint_state is None:
+            missing.append("joint_state")
+        if self.dynamic_surface_point is None or self.dynamic_surface_normal is None:
+            missing.append("work_area_plane")
+        if self.dynamic_work_area_corners is None:
+            missing.append("work_area_corners")
+        elif (
+            self._work_area_refine_previous_corner_signature is not None
+            and self._work_area_corners_signature
+            == self._work_area_refine_previous_corner_signature
+            and time.monotonic() - float(self._work_area_refine_request_time) < 1.0
+        ):
+            missing.append("new_work_area_corners")
+
+        if not missing:
+            self._cancel_work_area_refine_wait_timer()
+            self.get_logger().info(
+                "[D405 PRESCAN] work area 선택 후 사전 보정 시작 "
+                "(fresh refined plane 이 있어도 새로 측정)")
+            self._publish_work_area_refine_status("moving")
+            self._begin_d405_prescan(mode="work_area")
+            return
+
+        elapsed = time.monotonic() - float(self._work_area_refine_request_time)
+        if elapsed > 5.0:
+            self.get_logger().warn(
+                "[D405 PRESCAN] work area refine 보류 timeout: "
+                f"missing={missing}")
+            self._cancel_work_area_refine_wait_timer()
+            self._publish_work_area_refine_status(
+                "timeout", missing=missing)
+            return
+
+        if self._work_area_refine_wait_timer is None:
+            self.get_logger().info(
+                "[D405 PRESCAN] work area refine 준비 대기: "
+                f"missing={missing}")
+            self._publish_work_area_refine_status(
+                "waiting", missing=missing)
+            self._work_area_refine_wait_timer = self.create_timer(
+                0.2, self._try_begin_work_area_refine)
+
+    def _cancel_work_area_refine_wait_timer(self):
+        if self._work_area_refine_wait_timer is not None:
+            self._work_area_refine_wait_timer.cancel()
+            self.destroy_timer(self._work_area_refine_wait_timer)
+            self._work_area_refine_wait_timer = None
+
+    def _publish_work_area_refine_status(self, state, **fields):
+        payload = {"state": state}
+        payload.update(fields)
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.work_area_refine_status_pub.publish(msg)
 
     def _retry_pending_surface_tf(self):
         """Surface/corner 메시지를 TF 준비 전에 받았을 때 나중에 다시 변환."""
@@ -664,6 +890,12 @@ class MoveItExecutor(Node):
             self.on_work_area_corners(self._pending_corners_msg)
 
     def on_perception_planes(self, msg: PoseArray):
+        if self.executing:
+            self.get_logger().warn(
+                "[SCENE] 실행 중 perception plane 갱신 무시 "
+                "(현재 plan/collision 기준 고정)",
+                throttle_duration_sec=2.0)
+            return
         frame = self._canonical_world_frame(msg.header.frame_id or BASE_FRAME)
         transform = None
         if frame != BASE_FRAME:
@@ -711,6 +943,8 @@ class MoveItExecutor(Node):
                 throttle_duration_sec=2.0)
 
     def on_plane_labels(self, msg: String):
+        if self.executing:
+            return
         try:
             payload = json.loads(msg.data)
             labels = payload.get("planes", [])
@@ -725,6 +959,12 @@ class MoveItExecutor(Node):
             self.scene_initialized = False
 
     def on_dynamic_obstacles(self, msg: MarkerArray):
+        if self.executing:
+            self.get_logger().warn(
+                "[SCENE] 실행 중 dynamic obstacle 갱신 무시 "
+                "(다음 plan부터 적용)",
+                throttle_duration_sec=2.0)
+            return
         obstacles = []
         new_ids = set()
         count = 0
@@ -914,6 +1154,24 @@ class MoveItExecutor(Node):
         closest = a + t * ab
         return float(np.linalg.norm(point - closest))
 
+    def on_motion_abort(self, msg: Bool):
+        if not msg.data:
+            return
+        self.get_logger().error(
+            f"[ABORT] {MOTION_ABORT_TOPIC} 수신 -> 현재 {self.joint_command_topic} 재생과 "
+            "D405 prescan 을 즉시 중단")
+        self._motion_abort_requested = True
+        self._cancel_joint_command_timer()
+        self._cancel_d405_prescan_timer()
+        self._cancel_work_area_refine_wait_timer()
+        self._d405_prescan_active = False
+        self._d405_prescan_queue = []
+        self._d405_prescan_index = 0
+        self._pose_goal_context = None
+        self._joint_goal_context = None
+        self.executing = False
+        self._publish_work_area_refine_status("aborted")
+
     def on_execute(self, msg: Bool):
         if not msg.data or not self.current_waypoints:
             self.get_logger().warn("실행할 웨이포인트가 없습니다")
@@ -925,6 +1183,7 @@ class MoveItExecutor(Node):
             self.get_logger().warn("이미 실행 중")
             return
 
+        self._motion_abort_requested = False
         if not self._joint_state_within_limits(
                 self.current_joint_state, "SKETCH start"):
             self.get_logger().error(
@@ -948,12 +1207,23 @@ class MoveItExecutor(Node):
             return
 
         self._sync_active_target_plane_from_waypoints(self.current_waypoints)
+        if self._maybe_begin_d405_prescan():
+            return
+        self.executing = True
+        self._start_sketch_motion_after_surface_ready()
+
+    def _start_sketch_motion_after_surface_ready(self):
+        # D405 refined plane 이 준비된 경우, 기존 ZED 기반 waypoint 를 새 평면에
+        # 한 번 더 투영한다. sketch_to_waypoints 가 다시 발행되지 않아도 같은
+        # sketch path 를 더 정확한 작업면 위에서 실행하기 위함이다.
+        self._apply_refined_surface_to_current_waypoints()
 
         # Stage 2/3 가 쓸 롤러 중심 + tcp waypoints 미리 계산
         densified_tip, tcp_wps, target, n = self._compute_snapped_tcp_waypoints()
         if not self._validate_contact_waypoints(densified_tip, target):
             self.get_logger().error(
                 "waypoint safety validation 실패 -> 실행 중단")
+            self.executing = False
             return
         if self.ft_status_time <= 0.0:
             self.get_logger().warn(
@@ -996,8 +1266,449 @@ class MoveItExecutor(Node):
         self.get_logger().info(
             f"safety_tcp=({safety_tcp.position.x:.3f},"
             f"{safety_tcp.position.y:.3f},{safety_tcp.position.z:.3f})")
-        self.executing = True
         self._begin_stage1_with_optional_ft_zero()
+
+    def _d405_refined_surface_fresh(self):
+        if (
+            self._d405_refined_lock_active
+            and self.dynamic_surface_source == "d405_refined"
+        ):
+            return True
+        return (
+            self.dynamic_surface_source == "d405_refined"
+            and time.monotonic() - self.dynamic_surface_source_time
+            <= D405_REFINED_SURFACE_HOLD_SEC
+        )
+
+    def _reset_d405_refined_lock(self, reason: str, clear_surface: bool = False):
+        was_locked = self._d405_refined_lock_active
+        self._d405_refined_lock_active = False
+        self._d405_refined_lock_time = 0.0
+        self._d405_refined_lock_signature = None
+        self._d405_refined_allow_corner_correction = False
+        if clear_surface and self.dynamic_surface_source == "d405_refined":
+            self.dynamic_surface_point = None
+            self.dynamic_surface_normal = None
+            self.dynamic_surface_source = "work_area_changed"
+            self.dynamic_surface_source_time = 0.0
+            self.scene_confirmed = False
+            self.scene_initialized = False
+        if was_locked or clear_surface:
+            self.get_logger().info(
+                f"[SURFACE] D405 refined plane lock 해제: {reason}")
+
+    def _maybe_begin_d405_prescan(self):
+        if not D405_PREFLIGHT_SCAN_ENABLED:
+            return False
+        if self._d405_refined_surface_fresh():
+            self.get_logger().info(
+                "[D405 PRESCAN] fresh refined plane 있음 -> 사전 측정 생략")
+            return False
+
+        return self._begin_d405_prescan(mode="sketch")
+
+    def _begin_d405_prescan(self, mode="sketch"):
+        scan_poses = self._build_d405_prescan_poses()
+        if not scan_poses:
+            self.get_logger().warn(
+                "[D405 PRESCAN] scan pose 생성 실패")
+            return False
+
+        self.executing = True
+        self._d405_prescan_active = True
+        self._d405_prescan_mode = mode
+        self._d405_prescan_queue = scan_poses
+        self._d405_prescan_index = 0
+        self.publish_scene_periodic()
+        self.get_logger().info("=" * 60)
+        self.get_logger().info(
+            "=== D405 PRESCAN: work-area plane refinement ===")
+        self.get_logger().info(
+            f"[D405 PRESCAN] mode={mode}, poses={len(scan_poses)}, "
+            f"standoff={D405_PREFLIGHT_SCAN_STANDOFF:.2f}m")
+        self._plan_next_d405_prescan_pose()
+        return True
+
+    def _build_d405_prescan_poses(self):
+        try:
+            target = get_target(self.cfg, self.active_target_name)
+        except Exception:
+            target = None
+
+        if self.current_waypoints:
+            normal = self._infer_surface_normal_from_waypoints(
+                self.current_waypoints, target or get_target(self.cfg, "wall"))
+        else:
+            _point, normal = self._active_surface_plane(
+                target or get_target(self.cfg, "wall"))
+        normal = np.asarray(normal, dtype=float)
+        normal /= np.linalg.norm(normal) + 1e-12
+
+        q = self._tcp_quat_for_surface_normal_near_current(normal)
+        samples = self._d405_prescan_surface_samples(normal)
+        poses = []
+        for sample in samples:
+            pose = self._make_d405_scan_tcp_pose(sample, normal, q)
+            if pose is not None:
+                poses.append(pose)
+        return poses
+
+    def _current_tcp_pose_np(self):
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                BASE_FRAME, EE_LINK, rclpy.time.Time(),
+                timeout=Duration(seconds=0.1),
+            )
+        except Exception:
+            return None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        return (
+            np.array([t.x, t.y, t.z], dtype=float),
+            np.array([q.x, q.y, q.z, q.w], dtype=float),
+        )
+
+    def _waypoint_or_normal_tcp_quat(self, waypoint, normal):
+        q_msg = waypoint.orientation
+        q = np.array([q_msg.x, q_msg.y, q_msg.z, q_msg.w], dtype=float)
+        if float(np.linalg.norm(q)) < 1e-6:
+            return self._tcp_quat_for_surface_normal(normal)
+        q /= np.linalg.norm(q) + 1e-12
+        try:
+            tool_axis = quat_apply(q, [0.0, -1.0, 0.0])
+            align = float(np.dot(tool_axis, -np.asarray(normal, dtype=float)))
+        except Exception:
+            align = 0.0
+        if align < 0.90:
+            self.get_logger().warn(
+                f"[D405 PRESCAN] waypoint orientation normal 정렬 낮음 "
+                f"(align={align:+.2f}) -> normal 기반 자세로 재계산")
+            return self._tcp_quat_for_surface_normal(normal)
+        return q
+
+    def _tcp_quat_for_surface_normal_near_current(self, normal):
+        """Align TCP local -Y to the surface while preserving current roll.
+
+        The surface normal fixes only one tool axis. Rotation around that normal
+        should stay as close as possible to the current TCP orientation, otherwise
+        MoveIt may pick a wrist/base-flipped IK solution even for a nearby pose.
+        """
+        y_axis = np.asarray(normal, dtype=float)
+        y_axis /= np.linalg.norm(y_axis) + 1e-12
+
+        current = self._current_tcp_pose_np()
+        if current is None:
+            return self._tcp_quat_for_surface_normal(normal)
+
+        _tcp_pos, current_q = current
+        r_current = quat_to_matrix(current_q)
+        x_ref = r_current[:, 0]
+        z_ref = r_current[:, 2]
+
+        x_axis = x_ref - y_axis * float(np.dot(x_ref, y_axis))
+        if float(np.linalg.norm(x_axis)) > 1e-6:
+            x_axis /= np.linalg.norm(x_axis) + 1e-12
+            z_axis = np.cross(x_axis, y_axis)
+            z_axis /= np.linalg.norm(z_axis) + 1e-12
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis /= np.linalg.norm(x_axis) + 1e-12
+        else:
+            z_axis = z_ref - y_axis * float(np.dot(z_ref, y_axis))
+            if float(np.linalg.norm(z_axis)) < 1e-6:
+                return self._tcp_quat_for_surface_normal(normal)
+            z_axis /= np.linalg.norm(z_axis) + 1e-12
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis /= np.linalg.norm(x_axis) + 1e-12
+            z_axis = np.cross(x_axis, y_axis)
+            z_axis /= np.linalg.norm(z_axis) + 1e-12
+
+        q = quat_from_matrix(np.column_stack([x_axis, y_axis, z_axis]))
+        old_tool_forward = -quat_apply(current_q, [0.0, 1.0, 0.0])
+        new_tool_forward = -quat_apply(q, [0.0, 1.0, 0.0])
+        align = float(np.dot(new_tool_forward, -y_axis))
+        roll_keep = float(np.dot(
+            quat_apply(current_q, [1.0, 0.0, 0.0]),
+            quat_apply(q, [1.0, 0.0, 0.0]),
+        ))
+        self.get_logger().info(
+            "[D405 PRESCAN] normal-only 자세 선택 "
+            f"(tool_align={align:+.3f}, current_forward_dot={float(np.dot(old_tool_forward, -y_axis)):+.3f}, "
+            f"roll_keep={roll_keep:+.3f})")
+        return q
+
+    @staticmethod
+    def _tcp_quat_for_surface_normal(normal):
+        forward = -np.asarray(normal, dtype=float)
+        forward /= np.linalg.norm(forward) + 1e-12
+        world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+        if abs(float(np.dot(forward, world_up))) > 0.99:
+            world_up = np.array([1.0, 0.0, 0.0], dtype=float)
+        y_axis = -forward
+        z_axis = world_up - y_axis * float(np.dot(world_up, y_axis))
+        z_axis /= np.linalg.norm(z_axis) + 1e-12
+        x_axis = np.cross(y_axis, z_axis)
+        x_axis /= np.linalg.norm(x_axis) + 1e-12
+        z_axis = np.cross(x_axis, y_axis)
+        z_axis /= np.linalg.norm(z_axis) + 1e-12
+        return quat_from_matrix(np.column_stack([x_axis, y_axis, z_axis]))
+
+    def _d405_prescan_surface_samples(self, normal):
+        expected = ROLLER_RADIUS + CONTACT_CLEARANCE
+        if self.current_waypoints:
+            pts = np.array([
+                [p.position.x, p.position.y, p.position.z]
+                for p in self.current_waypoints
+            ], dtype=float)
+            fallback_center = np.mean(pts, axis=0) - normal * expected
+        elif self.dynamic_surface_point is not None:
+            fallback_center = np.asarray(self.dynamic_surface_point, dtype=float)
+        else:
+            fallback_center = np.zeros(3, dtype=float)
+        samples = [fallback_center]
+
+        basis = self._dynamic_work_area_basis()
+        if basis is not None:
+            center, u_axis, v_axis, half_u, half_v = basis
+            center = self._project_point_to_active_surface(center, normal)
+            u_axis = np.asarray(u_axis, dtype=float)
+            u_axis /= np.linalg.norm(u_axis) + 1e-12
+            v_axis = np.asarray(v_axis, dtype=float)
+            v_axis /= np.linalg.norm(v_axis) + 1e-12
+
+            inset = min(D405_PREFLIGHT_SCAN_INSET_M, half_u, half_v)
+            u_limit = max(0.0, float(half_u) - inset)
+            v_limit = max(0.0, float(half_v) - inset)
+            anchor_u = 0.0
+            anchor_v = 0.0
+            current = self._current_tcp_pose_np()
+            if current is not None:
+                tcp_pos, tcp_q = current
+                current_camera = (
+                    tcp_pos + quat_apply(tcp_q, D405_COLLISION_CENTER)
+                )
+                desired_surface = (
+                    current_camera
+                    - np.asarray(normal, dtype=float) * D405_PREFLIGHT_SCAN_STANDOFF
+                )
+                desired_surface = self._project_point_to_active_surface(
+                    desired_surface, normal)
+                rel = desired_surface - center
+                anchor_u = float(np.clip(
+                    np.dot(rel, u_axis), -u_limit, u_limit))
+                anchor_v = float(np.clip(
+                    np.dot(rel, v_axis), -v_limit, v_limit))
+                self.get_logger().info(
+                    "[D405 PRESCAN] 작업영역 내 최소 이동 측정점 선택 "
+                    f"(u={anchor_u:+.3f}m, v={anchor_v:+.3f}m)")
+
+            probe_u = min(D405_PREFLIGHT_PROBE_OFFSET_M, u_limit)
+            probe_v = min(D405_PREFLIGHT_PROBE_OFFSET_M, v_limit)
+            uv_candidates = [(anchor_u, anchor_v)]
+            if probe_u >= 0.03:
+                uv_candidates.append((anchor_u + probe_u, anchor_v))
+            if probe_v >= 0.03:
+                uv_candidates.append((anchor_u, anchor_v + probe_v))
+            if probe_u >= 0.03:
+                uv_candidates.append((anchor_u - probe_u, anchor_v))
+            if probe_v >= 0.03:
+                uv_candidates.append((anchor_u, anchor_v - probe_v))
+            uv_candidates.append((0.0, 0.0))
+
+            samples = []
+            for u, v in uv_candidates:
+                u = float(np.clip(u, -u_limit, u_limit))
+                v = float(np.clip(v, -v_limit, v_limit))
+                p = center + u * u_axis + v * v_axis
+                p = self._project_point_to_active_surface(p, normal)
+                samples.append(p)
+
+        unique = []
+        for p in samples:
+            if not any(float(np.linalg.norm(p - q)) < 0.03 for q in unique):
+                unique.append(np.asarray(p, dtype=float))
+        if D405_PREFLIGHT_SCAN_MAX_POSES > 0 and len(unique) > D405_PREFLIGHT_SCAN_MAX_POSES:
+            self.get_logger().warn(
+                "[D405 PRESCAN] 안전 모드: 자동 work-area 촬영 pose 를 "
+                f"{len(unique)}개 -> {D405_PREFLIGHT_SCAN_MAX_POSES}개로 제한")
+            unique = unique[:D405_PREFLIGHT_SCAN_MAX_POSES]
+        return unique
+
+    def _make_d405_scan_tcp_pose(self, surface_point, normal, q):
+        normal = np.asarray(normal, dtype=float)
+        normal /= np.linalg.norm(normal) + 1e-12
+        q = np.asarray(q, dtype=float)
+        q /= np.linalg.norm(q) + 1e-12
+        desired_camera = (
+            np.asarray(surface_point, dtype=float)
+            + normal * D405_PREFLIGHT_SCAN_STANDOFF
+        )
+        camera_offset_world = quat_apply(q, D405_COLLISION_CENTER)
+        tcp_pos = desired_camera - camera_offset_world
+        pose = Pose()
+        pose.position.x = float(tcp_pos[0])
+        pose.position.y = float(tcp_pos[1])
+        pose.position.z = float(tcp_pos[2])
+        pose.orientation.x = float(q[0])
+        pose.orientation.y = float(q[1])
+        pose.orientation.z = float(q[2])
+        pose.orientation.w = float(q[3])
+        return pose
+
+    def _plan_next_d405_prescan_pose(self):
+        self._cancel_d405_prescan_timer()
+        if self._d405_prescan_index >= len(self._d405_prescan_queue):
+            self._finish_d405_prescan(success=False)
+            return
+        pose = self._d405_prescan_queue[self._d405_prescan_index]
+        label = f"D405_PRESCAN_{self._d405_prescan_index + 1}"
+        self.get_logger().info(
+            f"[D405 PRESCAN] {label}: tcp=("
+            f"{pose.position.x:.3f},{pose.position.y:.3f},"
+            f"{pose.position.z:.3f})")
+        if self._d405_prescan_index == 0:
+            self._plan_pose_goal(
+                label,
+                pose,
+                D405_PREFLIGHT_SPEED_SCALE,
+                finalize_cb=self._d405_prescan_pose_done,
+            )
+            return
+        self._plan_d405_probe_cartesian(
+            label,
+            pose,
+            finalize_cb=self._d405_prescan_pose_done,
+        )
+
+    def _d405_prescan_pose_done(self, success):
+        if not success:
+            self.get_logger().warn(
+                f"[D405 PRESCAN] pose#{self._d405_prescan_index + 1} "
+                "planning/execution 실패 -> 다음 측정 pose 시도")
+            self._d405_prescan_index += 1
+            self._plan_next_d405_prescan_pose()
+            return
+        self._d405_prescan_wait_start = time.monotonic()
+        self._d405_prescan_arrived_time = self._d405_prescan_wait_start
+        self._d405_prescan_capture_sent = False
+        self._d405_prescan_capture_time = 0.0
+        self._d405_prescan_timer = self.create_timer(
+            0.1, self._wait_d405_prescan_refined)
+        self.get_logger().info(
+            f"[D405 PRESCAN] 정지 후 refined plane 대기 "
+            f"(settle={D405_PREFLIGHT_SCAN_SETTLE_SEC:.1f}s, "
+            f"timeout={D405_PREFLIGHT_SCAN_TIMEOUT_SEC:.1f}s)")
+
+    def _wait_d405_prescan_refined(self):
+        now = time.monotonic()
+        wait_start = float(self._d405_prescan_wait_start or now)
+        if now - wait_start < D405_PREFLIGHT_SCAN_SETTLE_SEC:
+            return
+        if not self._d405_prescan_capture_sent:
+            self._d405_prescan_capture_sent = True
+            self._d405_prescan_capture_time = now
+            msg = Bool()
+            msg.data = True
+            self.d405_capture_pub.publish(msg)
+            self.get_logger().info(
+                "[D405 PRESCAN] D405 pointcloud capture 요청")
+            return
+        capture_time = float(self._d405_prescan_capture_time or wait_start)
+        if (
+            self.dynamic_surface_source == "d405_refined"
+            and self.dynamic_surface_source_time >= capture_time
+        ):
+            self._finish_d405_prescan(success=True)
+            return
+        if now - capture_time <= D405_PREFLIGHT_SCAN_TIMEOUT_SEC:
+            return
+
+        self._cancel_d405_prescan_timer()
+        self.get_logger().warn(
+            f"[D405 PRESCAN] pose#{self._d405_prescan_index + 1} 에서 "
+            "refined plane 미수신 -> 다음 측정 pose 시도")
+        self._d405_prescan_index += 1
+        self._plan_next_d405_prescan_pose()
+
+    def _finish_d405_prescan(self, success):
+        self._cancel_d405_prescan_timer()
+        mode = self._d405_prescan_mode
+        self._d405_prescan_active = False
+        self._d405_prescan_queue = []
+        self._d405_prescan_index = 0
+        if success:
+            if mode == "work_area":
+                self.get_logger().info(
+                    "[D405 PRESCAN] work area refined 완료 -> "
+                    "wall_front 가 보정 평면 기준으로 갱신됩니다")
+                self._publish_work_area_refine_status("done")
+                self.executing = False
+                return
+            self.get_logger().info(
+                "[D405 PRESCAN] refined plane 확보 -> 스케치 경로 보정 후 시작")
+            self._start_sketch_motion_after_surface_ready()
+            return
+
+        if mode == "work_area":
+            self.get_logger().warn(
+                "[D405 PRESCAN] work area refined 실패 -> "
+                "현재 wall_front 는 ZED 기준입니다")
+            self._publish_work_area_refine_status("failed")
+            self.executing = False
+            return
+
+        if D405_PREFLIGHT_REQUIRE_REFINED:
+            self.get_logger().error(
+                "[D405 PRESCAN] refined plane 확보 실패 -> 안전을 위해 실행 중단")
+            self.executing = False
+            return
+        self.get_logger().warn(
+            "[D405 PRESCAN] refined plane 확보 실패 -> ZED plane 기준으로 계속 진행")
+        self._start_sketch_motion_after_surface_ready()
+
+    def _cancel_d405_prescan_timer(self):
+        if self._d405_prescan_timer is not None:
+            self._d405_prescan_timer.cancel()
+            self.destroy_timer(self._d405_prescan_timer)
+            self._d405_prescan_timer = None
+        self._d405_prescan_wait_start = None
+        self._d405_prescan_capture_sent = False
+        self._d405_prescan_capture_time = 0.0
+
+    def _apply_refined_surface_to_current_waypoints(self):
+        if not self.current_waypoints or not self._d405_refined_surface_fresh():
+            return
+        normal = np.asarray(self.dynamic_surface_normal, dtype=float)
+        normal /= np.linalg.norm(normal) + 1e-12
+        try:
+            target = get_target(self.cfg, self.active_target_name)
+        except Exception:
+            target = get_target(self.cfg, "wall")
+        old_normal = self._infer_surface_normal_from_waypoints(
+            self.current_waypoints, target)
+        old_normal = np.asarray(old_normal, dtype=float)
+        old_normal /= np.linalg.norm(old_normal) + 1e-12
+        expected = ROLLER_RADIUS + CONTACT_CLEARANCE
+        q = self._tcp_quat_for_surface_normal(normal)
+
+        updated = []
+        for wp in self.current_waypoints:
+            p = np.array([wp.position.x, wp.position.y, wp.position.z], dtype=float)
+            old_surface = p - old_normal * expected
+            new_surface = self._project_point_to_active_surface(old_surface, normal)
+            new_p = new_surface + normal * expected
+            out = copy.deepcopy(wp)
+            out.position.x = float(new_p[0])
+            out.position.y = float(new_p[1])
+            out.position.z = float(new_p[2])
+            out.orientation.x = float(q[0])
+            out.orientation.y = float(q[1])
+            out.orientation.z = float(q[2])
+            out.orientation.w = float(q[3])
+            updated.append(out)
+        self.current_waypoints = updated
+        self.get_logger().info(
+            f"[D405 PRESCAN] current_waypoints {len(updated)}개를 "
+            "D405 refined plane 으로 재투영")
 
     def _cancel_ft_auto_zero_timer(self):
         if self._ft_auto_zero_timer is not None:
@@ -1298,17 +2009,26 @@ class MoveItExecutor(Node):
         """모니터링 용. scene_confirmed 는 ApplyPlanningScene 결과로 설정."""
         scene_ids = set(obj.id for obj in msg.world.collision_objects)
         objects_ok = self._enabled_ids.issubset(scene_ids)
-        eoat_ok = any(
-            ao.object.id == "eoat"
-            for ao in msg.robot_state.attached_collision_objects)
+        eoat_ok = (
+            not PUBLISH_EOAT_ATTACHED_OBJECT
+            or any(
+                ao.object.id == "eoat"
+                for ao in msg.robot_state.attached_collision_objects)
+        )
         if objects_ok and eoat_ok and not getattr(self, "_monitor_logged", False):
             self._monitor_logged = True
             self.get_logger().info(
-                f"[INFO] /monitored_planning_scene 에 {sorted(self._enabled_ids)} + eoat 보임 "
+                f"[INFO] /monitored_planning_scene 에 {sorted(self._enabled_ids)} 보임 "
+                "(EOAT 는 robot_description 고정 링크) "
                 "(apply 결과로 confirmed 됨)")
 
     # ---- PlanningScene (물체들 + EoAT AttachedCollisionObject) ----------------
     def publish_scene_periodic(self):
+        if self._joint_command_timer is not None:
+            self.get_logger().warn(
+                f"[SCENE] {self.joint_command_topic} playback 중 PlanningScene apply 보류",
+                throttle_duration_sec=2.0)
+            return
         if self.scene_confirmed:
             return
 
@@ -1342,7 +2062,12 @@ class MoveItExecutor(Node):
                 dynamic_target = self._dynamic_target_collision_object(obj)
                 if dynamic_target is not None:
                     ps.world.collision_objects.append(dynamic_target)
-                    continue
+                else:
+                    self.get_logger().warn(
+                        "[SCENE] active target perception plane 미수신 -> "
+                        "static wall fallback 등록 안 함",
+                        throttle_duration_sec=2.0)
+                continue
 
             co = CollisionObject()
             co.id = obj["name"]
@@ -1473,7 +2198,8 @@ class MoveItExecutor(Node):
         eoat_aco.object.operation = CollisionObject.ADD
         # 장착 플랜지 쪽 접촉만 허용. link5 는 손목 충돌을 잡기 위해 제외.
         eoat_aco.touch_links = list(EOAT_TOUCH_LINKS)
-        ps.robot_state.attached_collision_objects.append(eoat_aco)
+        if PUBLISH_EOAT_ATTACHED_OBJECT:
+            ps.robot_state.attached_collision_objects.append(eoat_aco)
         ps.robot_state.is_diff = True
 
         # publish 도 유지 (RViz 시각화 용)
@@ -1490,7 +2216,8 @@ class MoveItExecutor(Node):
 
         if not self.scene_initialized:
             self.get_logger().info(
-                "PlanningScene: 물체 + EoAT(AFT200-mesh+EOAT-no-camera-mesh+D405) publish + apply 시도")
+                "PlanningScene: 물체 publish + apply 시도 "
+                "(EOAT collision 은 robot_description 고정 링크)")
             self.scene_initialized = True
 
     def _dynamic_target_collision_object(self, obj):
@@ -1523,6 +2250,15 @@ class MoveItExecutor(Node):
             width = 2.0 * (half_u + TARGET_COLLISION_MARGIN)
             height = 2.0 * (half_v + TARGET_COLLISION_MARGIN)
             source = "work_area_corners"
+            if (
+                TARGET_COLLISION_USE_NOMINAL_EXTENT_AFTER_D405
+                and self.dynamic_surface_source == "d405_refined"
+            ):
+                tangent_sizes = sorted([float(v) for v in size], reverse=True)
+                if len(tangent_sizes) >= 2:
+                    width = max(width, tangent_sizes[0])
+                    height = max(height, tangent_sizes[1])
+                    source += "+d405_nominal_target_extent"
             if matched_extent is not None:
                 width = max(width, matched_extent[0])
                 height = max(height, matched_extent[1])
@@ -1598,6 +2334,9 @@ class MoveItExecutor(Node):
             label = self._plane_label_for_index(plane["index"])
             if label is None:
                 continue
+            kind = str(label.get("type", "plane"))
+            if kind == "floor":
+                continue
             try:
                 dims = [
                     float(v)
@@ -1609,7 +2348,6 @@ class MoveItExecutor(Node):
             if len(dims) < 2:
                 continue
             dims = sorted(dims, reverse=True)
-            kind = str(label.get("type", "plane"))
             # 같은 무한 평면 위에서는 centroid 가 멀 수 있으므로 plane distance
             # 와 normal 정렬을 우선한다. wall label 은 동률일 때만 약간 선호.
             score = plane_dist + (1.0 - align) * 0.25
@@ -1651,7 +2389,8 @@ class MoveItExecutor(Node):
         if resp.success and not self.scene_confirmed:
             self.scene_confirmed = True
             self.get_logger().info(
-                "[OK] PlanningScene apply 성공 (MoveIt 에 wall+EoAT(AFT200-mesh+EOAT-no-camera-mesh+D405) 등록됨)")
+                "[OK] PlanningScene apply 성공 "
+                "(wall/obstacles 등록, EOAT 는 robot_description 고정 링크)")
         elif not resp.success:
             self.get_logger().warn("ApplyPlanningScene 실패 (success=False)")
 
@@ -1711,7 +2450,7 @@ class MoveItExecutor(Node):
         """RB10 driver 의 FollowJointTrajectory action 으로 trajectory 전송.
         on_complete: action 성공 후 호출할 callback (다음 stage 트리거용).
         함수명은 호출처 호환을 위해 유지."""
-        if EXECUTION_BACKEND == "joint_command":
+        if self.execution_backend == "joint_command":
             return self._execute_trajectory_joint_command(
                 traj, on_complete=on_complete,
                 force_guard=force_guard, label=label)
@@ -1727,6 +2466,156 @@ class MoveItExecutor(Node):
             float(point.time_from_start.sec) +
             float(point.time_from_start.nanosec) * 1e-9
         )
+
+    def _joint_command_max_speed(self, label):
+        text = (label or "").lower()
+        if "stage 3" in text or "contact" in text:
+            return JOINT_COMMAND_CONTACT_MAX_SPEED_RAD_S
+        if "stage 1" in text or "stage 2" in text or "stage 4" in text:
+            return JOINT_COMMAND_APPROACH_MAX_SPEED_RAD_S
+        return JOINT_COMMAND_DEFAULT_MAX_SPEED_RAD_S
+
+    def _current_positions_for_joints(self, joint_names):
+        if self.current_joint_state is None or not self.current_joint_state.name:
+            return None
+        current = dict(zip(
+            self.current_joint_state.name,
+            self.current_joint_state.position,
+        ))
+        if any(name not in current for name in joint_names):
+            return None
+        return [float(current[name]) for name in joint_names]
+
+    @staticmethod
+    def _max_joint_delta(a, b):
+        if len(a) != len(b):
+            return 0.0
+        return max(abs(float(x) - float(y)) for x, y in zip(a, b))
+
+    def _trajectory_joint_metrics(self, jt):
+        points = list(jt.points)
+        current_positions = self._current_positions_for_joints(jt.joint_names)
+        if current_positions is not None and points:
+            first_positions = [float(v) for v in points[0].positions]
+            if self._max_joint_delta(
+                current_positions, first_positions) > JOINT_COMMAND_INSERT_START_TOL_RAD:
+                start_point = JointTrajectoryPoint()
+                start_point.positions = current_positions
+                points = [start_point] + points
+
+        total_joint_distance = 0.0
+        max_segment_joint_delta = 0.0
+        max_segment_distance = 0.0
+        for i in range(1, len(points)):
+            prev = [float(v) for v in points[i - 1].positions]
+            cur = [float(v) for v in points[i].positions]
+            delta_vec = np.asarray(cur, dtype=float) - np.asarray(prev, dtype=float)
+            segment_distance = float(np.linalg.norm(delta_vec))
+            segment_joint_delta = self._max_joint_delta(prev, cur)
+            total_joint_distance += segment_distance
+            max_segment_distance = max(max_segment_distance, segment_distance)
+            max_segment_joint_delta = max(max_segment_joint_delta, segment_joint_delta)
+
+        if len(points) >= 2:
+            start_goal_delta = self._max_joint_delta(
+                points[0].positions, points[-1].positions)
+        else:
+            start_goal_delta = 0.0
+
+        return {
+            "point_count": len(points),
+            "joint_path": total_joint_distance,
+            "max_segment_l2": max_segment_distance,
+            "max_joint_delta": max_segment_joint_delta,
+            "start_goal_delta": start_goal_delta,
+        }
+
+    def _d405_prescan_trajectory_is_safe(self, traj, label):
+        if not str(label).startswith("D405_PRESCAN"):
+            return True
+        jt = traj.joint_trajectory
+        metrics = self._trajectory_joint_metrics(jt)
+        reasons = []
+        if metrics["joint_path"] > D405_PREFLIGHT_MAX_JOINT_PATH_RAD:
+            reasons.append(
+                f"joint_path={metrics['joint_path']:.2f}rad"
+                f">{D405_PREFLIGHT_MAX_JOINT_PATH_RAD:.2f}")
+        if metrics["start_goal_delta"] > D405_PREFLIGHT_MAX_START_GOAL_DELTA_RAD:
+            reasons.append(
+                f"start_goal_delta={metrics['start_goal_delta']:.2f}rad"
+                f">{D405_PREFLIGHT_MAX_START_GOAL_DELTA_RAD:.2f}")
+        if metrics["point_count"] > D405_PREFLIGHT_MAX_PLAN_POINTS:
+            reasons.append(
+                f"points={metrics['point_count']}>{D405_PREFLIGHT_MAX_PLAN_POINTS}")
+
+        self.get_logger().info(
+            f"[D405 PRESCAN SAFETY] {label}: "
+            f"points={metrics['point_count']}, "
+            f"joint_path={metrics['joint_path']:.2f}rad, "
+            f"start_goal_delta={metrics['start_goal_delta']:.2f}rad, "
+            f"max_segment_l2={math.degrees(metrics['max_segment_l2']):.1f}deg")
+        if not reasons:
+            return True
+        self.get_logger().error(
+            f"[D405 PRESCAN SAFETY] {label} plan rejected: "
+            + ", ".join(reasons))
+        return False
+
+    def _playback_points_and_times(self, jt, label):
+        """Normalize MoveIt timing and cap Isaac joint command playback velocity.
+
+        Some MoveIt results start at t>0 or have sparse/zero timestamps. Isaac
+        then appears to wait and finally jump. For direct Isaac joint command
+        playback, build a local time axis from joint-space path length instead
+        of preserving every MoveIt segment duration. This avoids repeated
+        slow-fast-slow pulses at dense Cartesian waypoints.
+        """
+        points = list(jt.points)
+        raw_times = [self._point_time_sec(p) for p in points]
+        raw_start = raw_times[0] if raw_times else 0.0
+
+        inserted_start = False
+        current_positions = self._current_positions_for_joints(jt.joint_names)
+        if current_positions is not None and points:
+            first_positions = [float(v) for v in points[0].positions]
+            start_delta = self._max_joint_delta(current_positions, first_positions)
+            if start_delta > JOINT_COMMAND_INSERT_START_TOL_RAD:
+                start_point = JointTrajectoryPoint()
+                start_point.positions = current_positions
+                start_point.velocities = [0.0] * len(current_positions)
+                start_point.accelerations = [0.0] * len(current_positions)
+                points = [start_point] + points
+                inserted_start = True
+
+        max_speed = max(self._joint_command_max_speed(label), 1e-6)
+        playback_times = [0.0]
+        max_segment_joint_delta = 0.0
+        max_segment_distance = 0.0
+        total_joint_distance = 0.0
+        for i in range(1, len(points)):
+            prev = [float(v) for v in points[i - 1].positions]
+            cur = [float(v) for v in points[i].positions]
+            delta_vec = np.asarray(cur, dtype=float) - np.asarray(prev, dtype=float)
+            segment_distance = float(np.linalg.norm(delta_vec))
+            segment_joint_delta = self._max_joint_delta(prev, cur)
+            max_segment_joint_delta = max(max_segment_joint_delta, segment_joint_delta)
+            max_segment_distance = max(max_segment_distance, segment_distance)
+            total_joint_distance += segment_distance
+            playback_times.append(total_joint_distance / max_speed)
+
+        if len(playback_times) == 1:
+            playback_times[0] = 0.0
+
+        self.get_logger().info(
+            f"[TIMING] {label}: raw_start={raw_start:.2f}s, "
+            f"raw_end={(raw_times[-1] if raw_times else 0.0):.2f}s, "
+            f"playback={playback_times[-1]:.2f}s, "
+            f"max_speed_cap={max_speed:.2f}rad/s, "
+            f"insert_start={'yes' if inserted_start else 'no'}, "
+            f"joint_path={total_joint_distance:.2f}rad, "
+            f"max_segment_l2={math.degrees(max_segment_distance):.1f}deg, "
+            f"max_joint_delta={math.degrees(max_segment_joint_delta):.1f}deg")
+        return points, playback_times
 
     def _cancel_joint_command_timer(self):
         if self._joint_command_timer is not None:
@@ -1753,7 +2642,7 @@ class MoveItExecutor(Node):
         return False
 
     def _joint_command_from_positions(self, joint_names, positions):
-        """Isaac Sim /joint_command JointState 생성.
+        """Isaac Sim joint command JointState 생성.
 
         trajectory joint_names 는 MoveIt 순서이고, Isaac JointGraph 는 현재
         /joint_states 순서도 받을 수 있으므로 이름 기준으로 재정렬한다.
@@ -1785,14 +2674,16 @@ class MoveItExecutor(Node):
         return msg
 
     def _joint_command_from_point(self, joint_names, point):
-        """Trajectory point 를 Isaac Sim /joint_command JointState 로 변환."""
+        """Trajectory point 를 Isaac Sim joint command JointState 로 변환."""
         return self._joint_command_from_positions(joint_names, point.positions)
 
     def _sample_trajectory_positions(self, points, times, idx, elapsed):
         """시간 elapsed 에서 trajectory position 을 보간한다.
 
-        MoveIt 이 velocity 를 채워주면 cubic Hermite 보간을 써서 waypoint
-        경계의 속도 불연속을 줄이고, velocity 가 없으면 선형 보간으로 fallback.
+        Isaac Sim position target 재생에서는 MoveIt velocity 를 그대로 쓰는
+        cubic Hermite 보간이 작은 overshoot/진동을 만들 수 있다. 직접 재생은
+        joint-space retiming 된 점들을 선형 보간해서 waypoint마다 가감속이
+        반복되지 않게 한다.
         """
         if elapsed <= times[0]:
             return [float(v) for v in points[0].positions]
@@ -1814,35 +2705,34 @@ class MoveItExecutor(Node):
         p0_pos = [float(v) for v in p0.positions]
         p1_pos = [float(v) for v in p1.positions]
 
-        has_vel = (
-            len(p0.velocities) == len(p0_pos) and
-            len(p1.velocities) == len(p1_pos)
-        )
-        if has_vel:
-            a2 = a * a
-            a3 = a2 * a
-            h00 = 2.0 * a3 - 3.0 * a2 + 1.0
-            h10 = a3 - 2.0 * a2 + a
-            h01 = -2.0 * a3 + 3.0 * a2
-            h11 = a3 - a2
-            positions = [
-                h00 * p0_pos[i] +
-                h10 * dt * float(p0.velocities[i]) +
-                h01 * p1_pos[i] +
-                h11 * dt * float(p1.velocities[i])
-                for i in range(len(p0_pos))
-            ]
-        else:
-            positions = [
-                p0_pos[i] + a * (p1_pos[i] - p0_pos[i])
-                for i in range(len(p0_pos))
-            ]
+        positions = [
+            p0_pos[i] + a * (p1_pos[i] - p0_pos[i])
+            for i in range(len(p0_pos))
+        ]
         return positions, idx
+
+    @staticmethod
+    def _slew_limit_positions(current, desired, max_step):
+        if current is None or len(current) != len(desired):
+            return [float(v) for v in desired]
+        out = []
+        for c, d in zip(current, desired):
+            c = float(c)
+            d = float(d)
+            delta = d - c
+            if abs(delta) <= max_step:
+                out.append(d)
+            else:
+                out.append(c + math.copysign(max_step, delta))
+        return out
 
     def _execute_trajectory_joint_command(self, traj, on_complete=None,
                                           force_guard=False,
                                           label="trajectory"):
-        """Isaac Sim JointGraph 가 구독하는 /joint_command 로 trajectory 재생."""
+        """Isaac Sim JointGraph 가 구독하는 전용 topic 으로 trajectory 재생."""
+        if self._motion_abort_requested:
+            self.get_logger().warn(f"{label} 실행 안 함 — motion abort 상태")
+            return False
         jt = traj.joint_trajectory
         if not jt.points:
             self.get_logger().warn("빈 궤적")
@@ -1860,12 +2750,18 @@ class MoveItExecutor(Node):
         self._cancel_joint_command_timer()
 
         start_time = time.monotonic()
-        point_times = [self._point_time_sec(p) for p in jt.points]
+        playback_points, point_times = self._playback_points_and_times(jt, label)
         end_time = max(point_times)
-        state = {"idx": 0, "done": False}
+        max_speed = self._joint_command_max_speed(label)
+        state = {
+            "idx": 0,
+            "done": False,
+            "last_cmd": self._current_positions_for_joints(jt.joint_names),
+            "last_tick_time": start_time,
+        }
 
         self.get_logger().info(
-            f"/joint_command 재생: {len(jt.points)} 포인트, "
+            f"{self.joint_command_topic} 재생: {len(playback_points)} 포인트, "
             f"duration={end_time:.2f}s, "
             f"publish_rate={1.0 / JOINT_COMMAND_TIMER_PERIOD:.0f}Hz, "
             f"interpolation=on, ft_guard={'on' if force_guard else 'off'}")
@@ -1874,7 +2770,8 @@ class MoveItExecutor(Node):
             if state["done"]:
                 return
 
-            elapsed = time.monotonic() - start_time
+            now_tick = time.monotonic()
+            elapsed = now_tick - start_time
             if force_guard and self._ft_guard_triggered(label):
                 state["done"] = True
                 self._cancel_joint_command_timer()
@@ -1882,31 +2779,43 @@ class MoveItExecutor(Node):
                 return
             try:
                 sampled = self._sample_trajectory_positions(
-                    jt.points, point_times, state["idx"], elapsed)
+                    playback_points, point_times, state["idx"], elapsed)
                 if isinstance(sampled, tuple):
                     positions, state["idx"] = sampled
                 else:
                     positions = sampled
+                tick_dt = max(1e-3, now_tick - state["last_tick_time"])
+                state["last_tick_time"] = now_tick
+                max_step = (
+                    max_speed * tick_dt * JOINT_COMMAND_SLEW_MULTIPLIER
+                )
+                positions = self._slew_limit_positions(
+                    state["last_cmd"], positions, max_step)
+                state["last_cmd"] = list(positions)
                 self.joint_cmd_pub.publish(
                     self._joint_command_from_positions(jt.joint_names, positions))
             except Exception as e:
-                self.get_logger().error(f"/joint_command publish 실패: {e}")
+                self.get_logger().error(
+                    f"{self.joint_command_topic} publish 실패: {e}")
                 state["done"] = True
                 self._cancel_joint_command_timer()
                 self.executing = False
                 return
 
-            if elapsed >= end_time:
+            final_positions = [float(v) for v in playback_points[-1].positions]
+            final_error = self._max_joint_delta(
+                state["last_cmd"] or final_positions, final_positions)
+            if elapsed >= end_time and final_error <= JOINT_COMMAND_FINAL_TOL_RAD:
                 state["done"] = True
                 try:
                     self.joint_cmd_pub.publish(
                         self._joint_command_from_point(
-                            jt.joint_names, jt.points[-1]))
+                            jt.joint_names, playback_points[-1]))
                 except Exception:
                     pass
                 self._cancel_joint_command_timer()
                 self.get_logger().info(
-                    ">>> 궤적 실행 완료 (/joint_command playback)")
+                    f">>> 궤적 실행 완료 ({self.joint_command_topic} playback)")
                 if on_complete is not None:
                     on_complete()
                 else:
@@ -2036,29 +2945,50 @@ class MoveItExecutor(Node):
 
         return c
 
+    @staticmethod
+    def _nearest_joint_equivalent(name, value, current):
+        """Choose the equivalent revolute angle closest to current state."""
+        if name not in JOINT_LIMITS:
+            return float(value)
+        lower, upper = JOINT_LIMITS[name]
+        candidates = []
+        for k in range(-2, 3):
+            candidate = float(value) + 2.0 * math.pi * k
+            if lower - JOINT_LIMIT_MARGIN <= candidate <= upper + JOINT_LIMIT_MARGIN:
+                candidates.append(candidate)
+        if not candidates:
+            return float(value)
+        return min(candidates, key=lambda x: abs(x - float(current)))
+
     def _make_joint_goal_constraints(
             self, joint_state, tolerance=0.02, joint_names=None):
         """IK 결과 joint_state 를 MoveGroup joint goal constraints 로 변환."""
         c = Constraints()
         goal_map = dict(zip(joint_state.name, joint_state.position))
+        current_map = dict(zip(
+            self.current_joint_state.name,
+            self.current_joint_state.position,
+        )) if self.current_joint_state is not None else {}
         current_names = set(self.current_joint_state.name) \
             if self.current_joint_state is not None else set(goal_map.keys())
         names = joint_names or joint_state.name
         for name in names:
             if name not in goal_map or name not in current_names:
                 continue
+            position = self._nearest_joint_equivalent(
+                name, goal_map[name], current_map.get(name, goal_map[name]))
             jc = JointConstraint()
             jc.joint_name = name
-            jc.position = float(goal_map[name])
+            jc.position = float(position)
             jc.tolerance_above = float(tolerance)
             jc.tolerance_below = float(tolerance)
             jc.weight = 1.0
             c.joint_constraints.append(jc)
         return c
 
-    def _log_stage1_joint_delta(self, goal_joint_state):
+    def _stage1_joint_delta_summary(self, goal_joint_state):
         if self.current_joint_state is None:
-            return
+            return None, 0.0
         current = dict(zip(
             self.current_joint_state.name,
             self.current_joint_state.position,
@@ -2067,11 +2997,18 @@ class MoveItExecutor(Node):
         deltas = []
         for name in READY_POSE_JOINTS.keys():
             if name in current and name in goal:
-                d = abs(float(goal[name]) - float(current[name]))
+                goal_pos = self._nearest_joint_equivalent(
+                    name, goal[name], current[name])
+                d = abs(float(goal_pos) - float(current[name]))
                 deltas.append((name, d))
         if not deltas:
-            return
-        max_name, max_delta = max(deltas, key=lambda item: item[1])
+            return None, 0.0
+        return max(deltas, key=lambda item: item[1])
+
+    def _log_stage1_joint_delta(self, goal_joint_state):
+        max_name, max_delta = self._stage1_joint_delta_summary(goal_joint_state)
+        if not max_name:
+            return max_name, max_delta
         self.get_logger().info(
             f"[STAGE 1 IK] nearest joint goal: max_delta="
             f"{math.degrees(max_delta):.1f}deg ({max_name})")
@@ -2081,6 +3018,36 @@ class MoveItExecutor(Node):
                 f"{math.degrees(max_delta):.1f}deg. "
                 "MoveIt 이 collision-free plan 은 찾지만 최단/최소 관절 이동을 "
                 "수학적으로 보장하지는 않음.")
+        return max_name, max_delta
+
+    def _stage1_trajectory_is_safe(self, traj, label):
+        jt = traj.joint_trajectory
+        metrics = self._trajectory_joint_metrics(jt)
+        reasons = []
+        if metrics["joint_path"] > STAGE1_MAX_JOINT_PATH_RAD:
+            reasons.append(
+                f"joint_path={metrics['joint_path']:.2f}rad"
+                f">{STAGE1_MAX_JOINT_PATH_RAD:.2f}")
+        if metrics["start_goal_delta"] > STAGE1_MAX_START_GOAL_DELTA_RAD:
+            reasons.append(
+                f"start_goal_delta={metrics['start_goal_delta']:.2f}rad"
+                f">{STAGE1_MAX_START_GOAL_DELTA_RAD:.2f}")
+        if metrics["point_count"] > STAGE1_MAX_PLAN_POINTS:
+            reasons.append(
+                f"points={metrics['point_count']}>{STAGE1_MAX_PLAN_POINTS}")
+
+        self.get_logger().info(
+            f"[STAGE 1 SAFETY] {label}: "
+            f"points={metrics['point_count']}, "
+            f"joint_path={metrics['joint_path']:.2f}rad, "
+            f"start_goal_delta={metrics['start_goal_delta']:.2f}rad, "
+            f"max_segment_l2={math.degrees(metrics['max_segment_l2']):.1f}deg")
+        if not reasons:
+            return True
+        self.get_logger().error(
+            f"[STAGE 1 SAFETY] {label} plan rejected: "
+            + ", ".join(reasons))
+        return False
 
     def _compute_snapped_tcp_waypoints(self):
         """current_waypoints 를 densify + tcp 변환한 결과 반환.
@@ -2246,6 +3213,14 @@ class MoveItExecutor(Node):
         if corners is None or len(corners) < 4:
             return None
         tl, tr, br, bl = np.asarray(corners[:4], dtype=float)
+        if self.dynamic_surface_point is not None and self.dynamic_surface_normal is not None:
+            pts = self._project_points_to_active_surface(
+                np.asarray([tl, tr, br, bl], dtype=float))
+            tl, tr, br, bl = pts
+            n = np.asarray(self.dynamic_surface_normal, dtype=float)
+            n /= np.linalg.norm(n) + 1e-12
+        else:
+            n = None
         center = (tl + tr + br + bl) / 4.0
         u_vec = ((tr - tl) + (br - bl)) / 2.0
         v_vec = ((bl - tl) + (br - tr)) / 2.0
@@ -2253,10 +3228,29 @@ class MoveItExecutor(Node):
         height = float(np.linalg.norm(v_vec))
         if width < 1e-6 or height < 1e-6:
             return None
+        if n is not None:
+            u_vec = u_vec - n * float(np.dot(u_vec, n))
+            v_vec = v_vec - n * float(np.dot(v_vec, n))
+            width = float(np.linalg.norm(u_vec))
+            height = float(np.linalg.norm(v_vec))
+            if width < 1e-6 or height < 1e-6:
+                return None
+            u_axis = u_vec / width
+            v_axis = v_vec / height
+            # Make an orthonormal basis on the refined plane while preserving
+            # the sign closest to the image-derived vertical axis.
+            v_ortho = np.cross(n, u_axis)
+            v_ortho /= np.linalg.norm(v_ortho) + 1e-12
+            if float(np.dot(v_ortho, v_axis)) < 0.0:
+                v_ortho = -v_ortho
+            v_axis = v_ortho
+        else:
+            u_axis = u_vec / width
+            v_axis = v_vec / height
         return (
             center,
-            u_vec / width,
-            v_vec / height,
+            u_axis,
+            v_axis,
             width / 2.0 + WORK_AREA_MARGIN,
             height / 2.0 + WORK_AREA_MARGIN,
         )
@@ -2274,6 +3268,20 @@ class MoveItExecutor(Node):
         n /= np.linalg.norm(n) + 1e-12
         plane_p = np.asarray(self.dynamic_surface_point, dtype=float)
         return p - float(np.dot(p - plane_p, n)) * n
+
+    def _project_points_to_active_surface(self, points, normal=None):
+        pts = np.asarray(points, dtype=float)
+        if self.dynamic_surface_point is None:
+            return pts
+        n = (
+            np.asarray(normal, dtype=float)
+            if normal is not None
+            else np.asarray(self.dynamic_surface_normal, dtype=float)
+        )
+        n /= np.linalg.norm(n) + 1e-12
+        plane_p = np.asarray(self.dynamic_surface_point, dtype=float)
+        signed = (pts - plane_p) @ n
+        return pts - signed[:, None] * n
 
     def _check_normal_motion(self, start_pose, end_pose, normal, expected_align,
                              label):
@@ -2305,21 +3313,58 @@ class MoveItExecutor(Node):
         return True
 
     # ---- Stage 1: free-space approach via MoveGroup action -------------------
+    def _cancel_stage1_scene_wait_timer(self):
+        if self._stage1_scene_wait_timer is not None:
+            self._stage1_scene_wait_timer.cancel()
+            self.destroy_timer(self._stage1_scene_wait_timer)
+            self._stage1_scene_wait_timer = None
+        self._stage1_scene_wait_start = None
+
     def stage1_approach_free(self, on_complete=None):
         # on_complete: 실행 완료 후 호출할 콜백. None 이면 production 기본 (Stage 2 chain).
         self._stage1_on_complete = on_complete or self.stage2_approach_linear
-        # PlanningScene 검증 대기 (attached torch + wall 등록 확인)
-        import time
-        wait_start = time.time()
-        while not self.scene_confirmed and (time.time() - wait_start) < 5.0:
-            self.get_logger().info("PlanningScene 검증 대기 중...")
-            time.sleep(0.5)
-        if not self.scene_confirmed:
-            self.get_logger().warn(
-                "PlanningScene 미검증 (5초 타임아웃). 충돌 회피 약할 수 있음.")
-        else:
-            self.get_logger().info("PlanningScene 검증 OK")
+        self._cancel_stage1_scene_wait_timer()
 
+        # PlanningScene 검증 대기 (attached EOAT + wall 등록 확인).
+        # rclpy callback 안에서 sleep 으로 기다리면 ApplyPlanningScene 응답도 같이
+        # 막힐 수 있으므로, 비동기 타이머로 confirmed 된 뒤에만 Stage 1 을 시작한다.
+        if not self.scene_confirmed:
+            self.get_logger().info(
+                "PlanningScene 검증 대기 시작 "
+                f"(timeout={SCENE_WAIT_TIMEOUT_SEC:.1f}s)")
+            self.publish_scene_periodic()
+            self._stage1_scene_wait_start = time.monotonic()
+            self._stage1_scene_wait_timer = self.create_timer(
+                SCENE_WAIT_PERIOD_SEC,
+                self._stage1_wait_for_scene_confirmed,
+            )
+            return
+
+        self.get_logger().info("PlanningScene 검증 OK")
+        self._start_stage1_after_scene_confirmed()
+
+    def _stage1_wait_for_scene_confirmed(self):
+        if self.scene_confirmed:
+            self._cancel_stage1_scene_wait_timer()
+            self.get_logger().info("PlanningScene 검증 OK")
+            self._start_stage1_after_scene_confirmed()
+            return
+
+        elapsed = time.monotonic() - float(self._stage1_scene_wait_start or 0.0)
+        if elapsed < SCENE_WAIT_TIMEOUT_SEC:
+            self.get_logger().info(
+                "PlanningScene 검증 대기 중...",
+                throttle_duration_sec=1.0,
+            )
+            return
+
+        self._cancel_stage1_scene_wait_timer()
+        self.get_logger().error(
+            "PlanningScene 미검증 -> 안전을 위해 Stage 1 계획/실행 중단 "
+            "(wall/EoAT collision 이 MoveIt 에 확정되지 않음)")
+        self.executing = False
+
+    def _start_stage1_after_scene_confirmed(self):
         if not self.move_action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("MoveGroup action server 없음 (/move_action)")
             self.executing = False
@@ -2380,7 +3425,16 @@ class MoveItExecutor(Node):
             )
             return
 
-        self._log_stage1_joint_delta(resp.solution.joint_state)
+        max_name, max_delta = self._log_stage1_joint_delta(
+            resp.solution.joint_state)
+        if max_delta > STAGE1_MAX_SINGLE_JOINT_DELTA_RAD:
+            self.get_logger().error(
+                "[STAGE 1 IK] 큰 관절 우회해 거부: "
+                f"{max_name}={math.degrees(max_delta):.1f}deg "
+                f"> {math.degrees(STAGE1_MAX_SINGLE_JOINT_DELTA_RAD):.1f}deg")
+            self._try_stage1_cartesian_approach("large IK joint delta")
+            return
+
         joint_goal = self._make_joint_goal_constraints(
             resp.solution.joint_state,
             tolerance=STAGE1_JOINT_GOAL_TOL,
@@ -2396,6 +3450,41 @@ class MoveItExecutor(Node):
             return
 
         self._send_stage1_plan([joint_goal], "nearest IK joint goal")
+
+    def _try_stage1_cartesian_approach(self, reason):
+        """Use a short Cartesian move to the safety pose when IK flips joints."""
+        if not self.cartesian_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().error(
+                "/compute_cartesian_path 서비스 없음 -> Stage 1 중단")
+            self.executing = False
+            return
+        if self.current_joint_state is None:
+            self.get_logger().error("joint_state 미수신 -> Stage 1 중단")
+            self.executing = False
+            return
+
+        self.get_logger().warn(
+            f"[STAGE 1] {reason} -> local cartesian approach 시도 "
+            f"(fraction>={STAGE1_CARTESIAN_FRACTION*100:.1f}% 필요)")
+
+        req = GetCartesianPath.Request()
+        req.header.frame_id = BASE_FRAME
+        req.header.stamp = self.get_clock().now().to_msg()
+        req.group_name = PLANNING_GROUP
+        req.link_name = EE_LINK
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        req.start_state = rs
+        req.waypoints = [self._safety_tcp_pose]
+        req.max_step = 0.01
+        req.jump_threshold = 2.0
+        req.avoid_collisions = True
+        req.max_velocity_scaling_factor = STAGE1_SPEED_SCALE
+        req.max_acceleration_scaling_factor = STAGE1_SPEED_SCALE
+
+        future = self.cartesian_client.call_async(req)
+        future.add_done_callback(self._stage1_cartesian_result)
 
     def _send_stage1_plan(self, goal_constraints, label, planner_id=PLANNER_ID):
         goal = MoveGroup.Goal()
@@ -2473,6 +3562,9 @@ class MoveItExecutor(Node):
         traj = result.planned_trajectory
         n_points = len(traj.joint_trajectory.points)
         self.get_logger().info(f"STAGE 1 planning OK: {n_points} 포인트")
+        if not self._stage1_trajectory_is_safe(traj, "OMPL"):
+            self.executing = False
+            return
 
         # MoveGroup request 의 max_velocity_scaling_factor 가 이미 timing 에
         # 반영되어 있다. 여기서 다시 같은 scale 을 적용하면 0.1 x 0.1 이 되어
@@ -2481,6 +3573,35 @@ class MoveItExecutor(Node):
         on_complete = getattr(self, "_stage1_on_complete", None) \
             or self.stage2_approach_linear
         if not self.execute_trajectory_direct(traj, on_complete=on_complete):
+            self.executing = False
+
+    def _stage1_cartesian_result(self, future):
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().error(f"STAGE 1 cartesian 실패: {e}")
+            self.executing = False
+            return
+
+        fraction = float(resp.fraction)
+        self.get_logger().info(
+            f"STAGE 1 cartesian: {fraction*100:.1f}%")
+        if fraction < STAGE1_CARTESIAN_FRACTION:
+            self.get_logger().error(
+                f"STAGE 1 cartesian fraction {fraction*100:.1f}% < "
+                f"{STAGE1_CARTESIAN_FRACTION*100:.1f}% -> 실행 중단")
+            self.executing = False
+            return
+
+        traj = resp.solution
+        if not self._stage1_trajectory_is_safe(traj, "cartesian"):
+            self.executing = False
+            return
+        traj = self._rescale_trajectory(traj, scale=1.0)
+        on_complete = getattr(self, "_stage1_on_complete", None) \
+            or self.stage2_approach_linear
+        if not self.execute_trajectory_direct(
+                traj, on_complete=on_complete, label="STAGE 1 cartesian"):
             self.executing = False
 
     # ---- Stage 2: linear approach to first surface point (cartesian) --------
@@ -2946,10 +4067,181 @@ class MoveItExecutor(Node):
         future = self.move_action_client.send_goal_async(goal)
         future.add_done_callback(self._joint_goal_response)
 
+    def _plan_pose_goal(self, label, pose, speed_scale, finalize_cb):
+        if not self.move_action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().warn(
+                f"MoveGroup action server 없음 — {label} 이동 불가")
+            finalize_cb(success=False)
+            return
+        if self.current_joint_state is None:
+            self.get_logger().warn(f"joint_state 미수신 — {label} 이동 불가")
+            finalize_cb(success=False)
+            return
+        if not self._joint_state_within_limits(
+                self.current_joint_state, f"{label} start"):
+            self.get_logger().warn(
+                f"{label} 이동 불가 — 현재 joint_state 가 limit 밖")
+            finalize_cb(success=False)
+            return
+
+        self._pose_goal_context = {
+            "label": label,
+            "finalize_cb": finalize_cb,
+        }
+
+        goal = MoveGroup.Goal()
+        goal.request.group_name = PLANNING_GROUP
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        goal.request.start_state = rs
+        goal.request.goal_constraints = [
+            self._make_pose_constraints(pose)
+        ]
+        goal.request.planner_id = PLANNER_ID
+        goal.request.allowed_planning_time = ALLOWED_PLANNING_TIME
+        goal.request.num_planning_attempts = PLANNING_ATTEMPTS
+        goal.request.max_velocity_scaling_factor = speed_scale
+        goal.request.max_acceleration_scaling_factor = speed_scale
+
+        goal.planning_options.plan_only = True
+        goal.planning_options.planning_scene_diff.is_diff = True
+
+        future = self.move_action_client.send_goal_async(goal)
+        future.add_done_callback(self._pose_goal_response)
+
+    def _plan_d405_probe_cartesian(self, label, pose, finalize_cb):
+        """Plan small D405 probing moves as Cartesian motion near the work area."""
+        if not self.cartesian_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(
+                f"/compute_cartesian_path 서비스 없음 — {label} 이동 불가")
+            finalize_cb(success=False)
+            return
+        if self.current_joint_state is None:
+            self.get_logger().warn(f"joint_state 미수신 — {label} 이동 불가")
+            finalize_cb(success=False)
+            return
+
+        self._d405_cartesian_context = {
+            "label": label,
+            "finalize_cb": finalize_cb,
+        }
+
+        req = GetCartesianPath.Request()
+        req.header.frame_id = BASE_FRAME
+        req.header.stamp = self.get_clock().now().to_msg()
+        req.group_name = PLANNING_GROUP
+        req.link_name = EE_LINK
+        rs = RobotState()
+        rs.joint_state = self.current_joint_state
+        rs.is_diff = False
+        req.start_state = rs
+        req.waypoints = [pose]
+        req.max_step = 0.01
+        req.jump_threshold = 2.0
+        req.avoid_collisions = True
+        req.max_velocity_scaling_factor = D405_PREFLIGHT_SPEED_SCALE
+        req.max_acceleration_scaling_factor = D405_PREFLIGHT_SPEED_SCALE
+
+        future = self.cartesian_client.call_async(req)
+        future.add_done_callback(self._d405_probe_cartesian_done)
+
+    def _d405_probe_cartesian_done(self, future):
+        ctx = self._d405_cartesian_context or {}
+        label = ctx.get("label", "D405_PRESCAN_CARTESIAN")
+        finalize_cb = ctx.get("finalize_cb", lambda success: None)
+        if self._motion_abort_requested:
+            self.get_logger().warn(f"{label} cartesian result 무시 — motion abort 상태")
+            finalize_cb(success=False)
+            return
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().warn(f"{label} cartesian 서비스 실패: {e}")
+            finalize_cb(success=False)
+            return
+
+        fraction = float(resp.fraction)
+        self.get_logger().info(
+            f"[D405 PRESCAN] {label} cartesian fraction={fraction*100:.1f}%")
+        if fraction < D405_PREFLIGHT_CARTESIAN_FRACTION:
+            self.get_logger().warn(
+                f"{label} cartesian fraction {fraction*100:.1f}% < "
+                f"{D405_PREFLIGHT_CARTESIAN_FRACTION*100:.1f}%")
+            finalize_cb(success=False)
+            return
+
+        traj = resp.solution
+        if not self._d405_prescan_trajectory_is_safe(traj, label):
+            finalize_cb(success=False)
+            return
+        traj = self._rescale_trajectory(traj, scale=1.0)
+        if not self.execute_trajectory_direct(
+                traj, on_complete=lambda: finalize_cb(success=True),
+                label=label):
+            finalize_cb(success=False)
+
+    def _pose_goal_response(self, future):
+        ctx = self._pose_goal_context or {}
+        label = ctx.get("label", "pose goal")
+        finalize_cb = ctx.get("finalize_cb", lambda success: None)
+        if self._motion_abort_requested:
+            self.get_logger().warn(f"{label} response 무시 — motion abort 상태")
+            finalize_cb(success=False)
+            return
+        try:
+            handle = future.result()
+        except Exception as e:
+            self.get_logger().warn(f"{label} send_goal 실패: {e}")
+            finalize_cb(success=False)
+            return
+        if not handle.accepted:
+            self.get_logger().warn(f"{label} goal rejected")
+            finalize_cb(success=False)
+            return
+        self.get_logger().info(f"{label} goal accepted, planning...")
+        handle.get_result_async().add_done_callback(self._pose_goal_result)
+
+    def _pose_goal_result(self, future):
+        ctx = self._pose_goal_context or {}
+        label = ctx.get("label", "pose goal")
+        finalize_cb = ctx.get("finalize_cb", lambda success: None)
+        if self._motion_abort_requested:
+            self.get_logger().warn(f"{label} result 무시 — motion abort 상태")
+            finalize_cb(success=False)
+            return
+        try:
+            result = future.result().result
+        except Exception as e:
+            self.get_logger().warn(f"{label} result 실패: {e}")
+            finalize_cb(success=False)
+            return
+        if result.error_code.val != 1:
+            self.get_logger().warn(
+                f"{label} planning 실패 error_code={result.error_code.val}")
+            finalize_cb(success=False)
+            return
+
+        traj = result.planned_trajectory
+        n_points = len(traj.joint_trajectory.points)
+        self.get_logger().info(f"{label} planning OK: {n_points} 포인트")
+        if not self._d405_prescan_trajectory_is_safe(traj, label):
+            finalize_cb(success=False)
+            return
+        traj = self._rescale_trajectory(traj, scale=1.0)
+        if not self.execute_trajectory_direct(
+                traj, on_complete=lambda: finalize_cb(success=True),
+                label=label):
+            finalize_cb(success=False)
+
     def _joint_goal_response(self, future):
         ctx = self._joint_goal_context or {}
         label = ctx.get("label", "joint goal")
         finalize_cb = ctx.get("finalize_cb", lambda success: None)
+        if self._motion_abort_requested:
+            self.get_logger().warn(f"{label} response 무시 — motion abort 상태")
+            finalize_cb(success=False)
+            return
         try:
             handle = future.result()
         except Exception as e:
@@ -2967,6 +4259,10 @@ class MoveItExecutor(Node):
         ctx = self._joint_goal_context or {}
         label = ctx.get("label", "joint goal")
         finalize_cb = ctx.get("finalize_cb", lambda success: None)
+        if self._motion_abort_requested:
+            self.get_logger().warn(f"{label} result 무시 — motion abort 상태")
+            finalize_cb(success=False)
+            return
         try:
             result = future.result().result
         except Exception as e:

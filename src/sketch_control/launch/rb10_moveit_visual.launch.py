@@ -4,8 +4,10 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
@@ -15,6 +17,41 @@ use_isaac_sim = LaunchConfiguration("use_isaac_sim")
 fake_sensor_commands = LaunchConfiguration("fake_sensor_commands")
 model_id = LaunchConfiguration("model_id")
 cb_simulation = LaunchConfiguration("cb_simulation")
+use_sim_time_cfg = LaunchConfiguration("use_sim_time")
+
+
+def _named_srdf():
+    srdf_path = os.path.join(
+        get_package_share_directory("sketch_control"),
+        "config",
+        "rbpodo_named.srdf",
+    )
+    with open(srdf_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _robot_description_with_eoat():
+    robot_description_content = Command([
+        FindExecutable(name="xacro"),
+        " ",
+        PathJoinSubstitution([
+            FindPackageShare("sketch_control"),
+            "urdf",
+            "rbpodo_with_eoat.urdf.xacro",
+        ]),
+        " robot_ip:=", robot_ip,
+        " use_fake_hardware:=", use_fake_hardware,
+        " use_isaac_sim:=", use_isaac_sim,
+        " fake_sensor_commands:=", fake_sensor_commands,
+        " cb_simulation:=", cb_simulation,
+        " model_id:=", model_id,
+    ])
+    return {
+        "robot_description": ParameterValue(
+            robot_description_content,
+            value_type=str,
+        )
+    }
 
 
 def generate_launch_description():
@@ -22,6 +59,7 @@ def generate_launch_description():
         DeclareLaunchArgument("robot_ip", default_value="10.0.2.7"),
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
         DeclareLaunchArgument("use_isaac_sim", default_value="true"),
+        DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("fake_sensor_commands", default_value="false"),
         DeclareLaunchArgument("cb_simulation", default_value="false"),
         DeclareLaunchArgument("model_id", default_value="rb10_1300e_u"),
@@ -32,7 +70,7 @@ def generate_launch_description():
 
 
 def launch_setup(context, *args, **kwargs):
-    use_sim_time = {"use_sim_time": True}
+    use_sim_time = {"use_sim_time": use_sim_time_cfg}
     mappings = {
         "robot_ip": robot_ip,
         "use_fake_hardware": use_fake_hardware,
@@ -55,6 +93,10 @@ def launch_setup(context, *args, **kwargs):
         )
         .to_moveit_configs()
     )
+    moveit_config.robot_description = _robot_description_with_eoat()
+    moveit_config.robot_description_semantic = {
+        "robot_description_semantic": _named_srdf()
+    }
 
     move_group = Node(
         package="moveit_ros_move_group",

@@ -14,27 +14,41 @@ from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from sensor_msgs_py import point_cloud2 as pc2
 
 
-DEPTH_TOPIC = "/zed/zed_node/depth/depth_registered"
-CAMERA_INFO_TOPIC = "/zed/zed_node/depth/camera_info"
-POINT_CLOUD_TOPIC = "/zed/zed_node/point_cloud/cloud_registered"
-
-STRIDE = 3
-MIN_DEPTH_M = 0.15
-MAX_DEPTH_M = 5.0
+DEFAULT_DEPTH_TOPIC = "/zed/zed_node/depth/depth_registered"
+DEFAULT_CAMERA_INFO_TOPIC = "/zed/zed_node/depth/camera_info"
+DEFAULT_POINT_CLOUD_TOPIC = "/zed/zed_node/point_cloud/cloud_registered"
 
 
 class DepthToPointCloudNode(Node):
     def __init__(self):
         super().__init__("depth_to_pointcloud_node")
+        self.declare_parameter("depth_topic", DEFAULT_DEPTH_TOPIC)
+        self.declare_parameter("camera_info_topic", DEFAULT_CAMERA_INFO_TOPIC)
+        self.declare_parameter("point_cloud_topic", DEFAULT_POINT_CLOUD_TOPIC)
+        self.declare_parameter("stride", 3)
+        self.declare_parameter("min_depth_m", 0.15)
+        self.declare_parameter("max_depth_m", 5.0)
+
+        self.depth_topic = str(self.get_parameter("depth_topic").value)
+        self.camera_info_topic = str(
+            self.get_parameter("camera_info_topic").value)
+        self.point_cloud_topic = str(
+            self.get_parameter("point_cloud_topic").value)
+        self.stride = max(1, int(self.get_parameter("stride").value))
+        self.min_depth_m = float(self.get_parameter("min_depth_m").value)
+        self.max_depth_m = float(self.get_parameter("max_depth_m").value)
+
         self.K = None
         self.create_subscription(
-            CameraInfo, CAMERA_INFO_TOPIC, self._on_info, qos_profile_sensor_data)
+            CameraInfo, self.camera_info_topic, self._on_info,
+            qos_profile_sensor_data)
         self.create_subscription(
-            Image, DEPTH_TOPIC, self._on_depth, qos_profile_sensor_data)
-        self.pub = self.create_publisher(PointCloud2, POINT_CLOUD_TOPIC, 10)
+            Image, self.depth_topic, self._on_depth, qos_profile_sensor_data)
+        self.pub = self.create_publisher(PointCloud2, self.point_cloud_topic, 10)
         self.get_logger().info(
-            f"depth_to_pointcloud 시작: {DEPTH_TOPIC} + {CAMERA_INFO_TOPIC} "
-            f"-> {POINT_CLOUD_TOPIC} (stride={STRIDE})")
+            f"depth_to_pointcloud 시작: {self.depth_topic} + "
+            f"{self.camera_info_topic} -> {self.point_cloud_topic} "
+            f"(stride={self.stride})")
 
     def _on_info(self, msg: CameraInfo):
         self.K = np.asarray(msg.k, dtype=float).reshape(3, 3)
@@ -49,12 +63,16 @@ class DepthToPointCloudNode(Node):
             return
 
         h, w = depth.shape
-        ys = np.arange(0, h, STRIDE, dtype=np.float32)
-        xs = np.arange(0, w, STRIDE, dtype=np.float32)
+        ys = np.arange(0, h, self.stride, dtype=np.float32)
+        xs = np.arange(0, w, self.stride, dtype=np.float32)
         uu, vv = np.meshgrid(xs, ys)
-        z = depth[::STRIDE, ::STRIDE]
+        z = depth[::self.stride, ::self.stride]
 
-        valid = np.isfinite(z) & (z > MIN_DEPTH_M) & (z < MAX_DEPTH_M)
+        valid = (
+            np.isfinite(z)
+            & (z > self.min_depth_m)
+            & (z < self.max_depth_m)
+        )
         if not np.any(valid):
             return
 

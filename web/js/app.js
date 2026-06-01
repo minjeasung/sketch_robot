@@ -428,6 +428,8 @@ $("btn-undo").addEventListener("click", () => {
 // ---- Publish workflow strokes as PoseArray ---------------------------------
 const TARGET_SELECTION_TOPIC = "/target_selection_pixels";
 const WORK_AREA_PIXELS_TOPIC = "/work_area_pixels";
+const REFINE_WORK_AREA_TOPIC = "/refine_work_area";
+const WORK_AREA_REFINE_STATUS_TOPIC = "/work_area_refine_status";
 const SKETCH_PIXELS_TOPIC = "/sketch_pixels";
 const SKETCH_EXECUTE_TOPIC = "/sketch_execute";
 const targetSelectionPub = new ROSLIB.Topic({
@@ -440,6 +442,16 @@ const workAreaPub = new ROSLIB.Topic({
   name: WORK_AREA_PIXELS_TOPIC,
   messageType: "geometry_msgs/PoseArray",
 });
+const refineWorkAreaPub = new ROSLIB.Topic({
+  ros: ros,
+  name: REFINE_WORK_AREA_TOPIC,
+  messageType: "std_msgs/Bool",
+});
+const workAreaRefineStatusSub = new ROSLIB.Topic({
+  ros: ros,
+  name: WORK_AREA_REFINE_STATUS_TOPIC,
+  messageType: "std_msgs/String",
+});
 const sketchPub = new ROSLIB.Topic({
   ros: ros,
   name: SKETCH_PIXELS_TOPIC,
@@ -451,6 +463,29 @@ const sketchExecutePub = new ROSLIB.Topic({
   messageType: "std_msgs/Bool",
 });
 let hasExecuted = false;  // Execute 한 번 이상 → Run Robot 활성화
+let waitingWorkAreaRefine = false;
+
+workAreaRefineStatusSub.subscribe((msg) => {
+  let payload = {};
+  try {
+    payload = JSON.parse(msg.data || "{}");
+  } catch (_) {
+    payload = { state: msg.data || "unknown" };
+  }
+  const state = payload.state || "unknown";
+  logEvent(`work area refine: ${state}`);
+  if (!waitingWorkAreaRefine) return;
+
+  if (state === "done") {
+    waitingWorkAreaRefine = false;
+    const radio = document.querySelector('input[name="workflow-mode"][value="path"]');
+    if (radio) radio.checked = true;
+    switchWorkflow("path");
+  } else if (state === "failed" || state === "timeout" || state === "busy") {
+    waitingWorkAreaRefine = false;
+    logEvent("D405 refine failed; staying in Work Area view");
+  }
+});
 
 function nowRosTime() {
   const ms = Date.now();
@@ -500,9 +535,10 @@ $("btn-set-target").addEventListener("click", () => {
 $("btn-set-work-area").addEventListener("click", () => {
   if (workflowMode !== "work_area" || currentView !== "zed_raw") return;
   if (publishPixels(workAreaPub, WORK_AREA_PIXELS_TOPIC, "zed_raw", currentStrokes())) {
-    const radio = document.querySelector('input[name="workflow-mode"][value="path"]');
-    if (radio) radio.checked = true;
-    switchWorkflow("path");
+    waitingWorkAreaRefine = true;
+    refineWorkAreaPub.publish(new ROSLIB.Message({ data: true }));
+    logEvent(`published refine request to ${REFINE_WORK_AREA_TOPIC}`);
+    logEvent("waiting for D405 work-area refinement before Path mode");
   }
 });
 

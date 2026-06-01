@@ -32,7 +32,7 @@ from rclpy.qos import (
 from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from sketch_control.pointcloud_utils import ransac_plane, voxel_downsample
@@ -43,6 +43,7 @@ WORK_AREA_PLANE_TOPIC = "/perception/work_area_plane"
 WORK_AREA_CORNERS_TOPIC = "/perception/work_area_corners"
 REFINED_PLANE_TOPIC = "/perception/work_area_plane_refined"
 STATUS_TOPIC = "/perception/d405_surface_refinement_status"
+CAPTURE_TOPIC = "/d405/refine_capture"
 
 LATCHED_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
@@ -87,6 +88,16 @@ class D405SurfaceRefinerNode(Node):
         self.declare_parameter("max_plane_shift_m", 0.08)
         self.declare_parameter("max_normal_angle_deg", 12.0)
         self.declare_parameter("min_update_period_s", 0.15)
+        self.declare_parameter("lock_after_refinement", True)
+        self.declare_parameter("stable_samples", 4)
+        self.declare_parameter("stable_shift_std_m", 0.006)
+        self.declare_parameter("stable_normal_spread_deg", 2.0)
+        self.declare_parameter("spatial_samples", 3)
+        self.declare_parameter("max_spatial_samples", 5)
+        self.declare_parameter("spatial_sample_separation_m", 0.045)
+        self.declare_parameter("max_fit_residual_m", 0.012)
+        self.declare_parameter("require_capture_trigger", True)
+        self.declare_parameter("capture_timeout_s", 1.2)
 
         self.cloud_topic = str(self.get_parameter("cloud_topic").value)
         self.max_points = int(self.get_parameter("max_points").value)
@@ -104,13 +115,39 @@ class D405SurfaceRefinerNode(Node):
         self.min_update_period_s = float(
             self.get_parameter("min_update_period_s").value
         )
+        self.lock_after_refinement = bool(
+            self.get_parameter("lock_after_refinement").value)
+        self.stable_samples = max(
+            1, int(self.get_parameter("stable_samples").value))
+        self.stable_shift_std_m = float(
+            self.get_parameter("stable_shift_std_m").value)
+        self.stable_normal_spread_rad = math.radians(
+            float(self.get_parameter("stable_normal_spread_deg").value))
+        self.spatial_samples = max(
+            1, int(self.get_parameter("spatial_samples").value))
+        self.max_spatial_samples = max(
+            self.spatial_samples,
+            int(self.get_parameter("max_spatial_samples").value))
+        self.spatial_sample_separation_m = float(
+            self.get_parameter("spatial_sample_separation_m").value)
+        self.max_fit_residual_m = float(
+            self.get_parameter("max_fit_residual_m").value)
+        self.require_capture_trigger = bool(
+            self.get_parameter("require_capture_trigger").value)
+        self.capture_timeout_s = float(
+            self.get_parameter("capture_timeout_s").value)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.latest_plane = None
         self.latest_corners = None
+        self._corner_signature = None
+        self._candidate_window = []
+        self._refined_locked = False
         self._last_update = 0.0
+        self._capture_pending = not self.require_capture_trigger
+        self._capture_deadline = 0.0
 
         self.create_subscription(
             PoseStamped, WORK_AREA_PLANE_TOPIC, self._on_work_area_plane, LATCHED_QOS
@@ -121,6 +158,7 @@ class D405SurfaceRefinerNode(Node):
         self.create_subscription(
             PointCloud2, self.cloud_topic, self._on_cloud, qos_profile_sensor_data
         )
+        self.create_subscription(Bool, CAPTURE_TOPIC, self._on_capture, 10)
 
         self.refined_pub = self.create_publisher(
             PoseStamped, REFINED_PLANE_TOPIC, LATCHED_QOS
@@ -130,6 +168,8 @@ class D405SurfaceRefinerNode(Node):
         self.get_logger().info(
             "D405 surface refiner 시작\n"
             f"  cloud   : {self.cloud_topic}\n"
+            f"  capture : {CAPTURE_TOPIC} "
+            f"({'required' if self.require_capture_trigger else 'continuous'})\n"
             f"  zed     : {WORK_AREA_PLANE_TOPIC}, {WORK_AREA_CORNERS_TOPIC}\n"
             f"  refined : {REFINED_PLANE_TOPIC}"
         )
@@ -140,12 +180,33 @@ class D405SurfaceRefinerNode(Node):
     def _on_work_area_corners(self, msg):
         if len(msg.poses) >= 4:
             self.latest_corners = msg
+            signature = self._corner_signature_from_msg(msg)
+            if signature != self._corner_signature:
+                self._corner_signature = signature
+                self._reset_refinement_lock("work_area_corners_changed")
+
+    def _on_capture(self, msg):
+        if not msg.data:
+            return
+        self._capture_pending = True
+        self._capture_deadline = time.monotonic() + self.capture_timeout_s
+        self.get_logger().info(
+            "[D405 REFINE] capture request 수신",
+            throttle_duration_sec=0.5)
 
     def _on_cloud(self, msg):
         now = time.monotonic()
         if now - self._last_update < self.min_update_period_s:
             return
         self._last_update = now
+
+        if self.require_capture_trigger:
+            if not self._capture_pending:
+                return
+            if now > self._capture_deadline:
+                self._capture_pending = False
+                self._publish_status(False, "capture_timeout")
+                return
 
         if self.latest_plane is None:
             self._publish_status(False, "waiting_for_work_area_plane")
@@ -230,18 +291,23 @@ class D405SurfaceRefinerNode(Node):
 
         refined_center = p0 - signed_shift * normal
 
-        refined = PoseStamped()
-        refined.header.stamp = self.get_clock().now().to_msg()
-        refined.header.frame_id = target_frame
-        refined.pose.position.x = float(refined_center[0])
-        refined.pose.position.y = float(refined_center[1])
-        refined.pose.position.z = float(refined_center[2])
-        qx, qy, qz, qw = _normal_to_quaternion(normal)
-        refined.pose.orientation.x = float(qx)
-        refined.pose.orientation.y = float(qy)
-        refined.pose.orientation.z = float(qz)
-        refined.pose.orientation.w = float(qw)
-        self.refined_pub.publish(refined)
+        candidate = {
+            "center": refined_center,
+            "normal": normal,
+            "sample_point": inlier_center,
+            "shift_m": signed_shift,
+            "angle_rad": angle,
+            "target_frame": target_frame,
+            "source_frame": source_frame,
+            "roi_points": int(roi.shape[0]),
+            "inliers": int(len(inliers)),
+        }
+        if self.lock_after_refinement:
+            self._handle_locked_candidate(candidate, p0, n0)
+            return
+
+        self._capture_pending = not self.require_capture_trigger
+        self._publish_refined_plane(target_frame, refined_center, normal)
         self._publish_status(
             True,
             "refined",
@@ -251,6 +317,170 @@ class D405SurfaceRefinerNode(Node):
             inliers=int(len(inliers)),
             shift_m=signed_shift,
             normal_angle_deg=math.degrees(angle),
+        )
+
+    def _handle_locked_candidate(self, candidate, p0, n0):
+        if self._refined_locked:
+            return
+
+        self._capture_pending = not self.require_capture_trigger
+        self._add_spatial_candidate(candidate)
+
+        if len(self._candidate_window) < self.spatial_samples:
+            self._publish_status(
+                False, "spatial_sampling",
+                samples=len(self._candidate_window),
+                required=self.spatial_samples,
+            )
+            return
+
+        normals = np.asarray(
+            [c["normal"] for c in self._candidate_window], dtype=float)
+        ref = normals[0]
+        for i in range(1, normals.shape[0]):
+            if float(np.dot(normals[i], ref)) < 0.0:
+                normals[i] = -normals[i]
+        avg_normal = normals.mean(axis=0)
+        avg_normal /= np.linalg.norm(avg_normal) + 1e-12
+        if float(np.dot(avg_normal, n0)) < 0.0:
+            avg_normal = -avg_normal
+
+        normal_spread = max(
+            math.acos(float(np.clip(np.dot(n, avg_normal), -1.0, 1.0)))
+            for n in normals
+        )
+        if normal_spread > self.stable_normal_spread_rad:
+            self._publish_status(
+                False, "stabilizing",
+                samples=len(self._candidate_window),
+                normal_spread_deg=math.degrees(normal_spread),
+            )
+            return
+
+        sample_points = np.asarray(
+            [c["sample_point"] for c in self._candidate_window], dtype=float)
+        fit_center, fit_normal, residual = self._fit_plane_from_sample_points(
+            sample_points, n0)
+        if fit_center is None:
+            self._publish_status(
+                False, "fit_failed",
+                samples=len(self._candidate_window),
+            )
+            return
+
+        fit_angle = math.acos(float(np.clip(np.dot(fit_normal, n0), -1.0, 1.0)))
+        if fit_angle > self.max_normal_angle_rad:
+            self._publish_status(
+                False, "fit_normal_angle_rejected",
+                samples=len(self._candidate_window),
+                angle_deg=math.degrees(fit_angle),
+            )
+            return
+        if residual > self.max_fit_residual_m:
+            self._publish_status(
+                False, "fit_residual_rejected",
+                samples=len(self._candidate_window),
+                residual_m=residual,
+            )
+            return
+
+        signed_shift = float(np.dot(np.asarray(p0, dtype=float) - fit_center,
+                                    fit_normal))
+        if abs(signed_shift) > self.max_plane_shift_m:
+            self._publish_status(
+                False, "fit_plane_shift_rejected",
+                samples=len(self._candidate_window),
+                shift_m=signed_shift,
+            )
+            return
+        avg_center = np.asarray(p0, dtype=float) - signed_shift * fit_normal
+        target_frame = candidate["target_frame"]
+        source_frame = candidate["source_frame"]
+        self._publish_refined_plane(target_frame, avg_center, fit_normal)
+        self._refined_locked = True
+        self._publish_status(
+            True,
+            "refined_locked",
+            target_frame=target_frame,
+            source_frame=source_frame,
+            samples=len(self._candidate_window),
+            roi_points=int(candidate["roi_points"]),
+            inliers=int(min(c["inliers"] for c in self._candidate_window)),
+            shift_m=signed_shift,
+            fit_residual_m=residual,
+            normal_angle_deg=math.degrees(fit_angle),
+            normal_spread_deg=math.degrees(normal_spread),
+        )
+
+    def _add_spatial_candidate(self, candidate):
+        p = np.asarray(candidate["sample_point"], dtype=float)
+        if not self._candidate_window:
+            self._candidate_window.append(candidate)
+            return
+
+        distances = [
+            float(np.linalg.norm(
+                p - np.asarray(c["sample_point"], dtype=float)))
+            for c in self._candidate_window
+        ]
+        nearest_i = int(np.argmin(distances))
+        nearest_d = distances[nearest_i]
+        if nearest_d < self.spatial_sample_separation_m:
+            self._candidate_window[nearest_i] = candidate
+            return
+        self._candidate_window.append(candidate)
+        if len(self._candidate_window) > self.max_spatial_samples:
+            self._candidate_window = self._candidate_window[
+                -self.max_spatial_samples:]
+
+    @staticmethod
+    def _fit_plane_from_sample_points(points, reference_normal):
+        pts = np.asarray(points, dtype=float)
+        if pts.shape[0] < 3:
+            return None, None, 0.0
+        center = pts.mean(axis=0)
+        _, s, vh = np.linalg.svd(pts - center, full_matrices=False)
+        if s.shape[0] < 2 or float(s[-2]) < 0.02:
+            return None, None, 0.0
+        normal = vh[-1]
+        normal /= np.linalg.norm(normal) + 1e-12
+        ref = np.asarray(reference_normal, dtype=float)
+        ref /= np.linalg.norm(ref) + 1e-12
+        if float(np.dot(normal, ref)) < 0.0:
+            normal = -normal
+        residual = float(np.max(np.abs((pts - center) @ normal)))
+        return center, normal, residual
+
+    def _publish_refined_plane(self, target_frame, center, normal):
+        refined = PoseStamped()
+        refined.header.stamp = self.get_clock().now().to_msg()
+        refined.header.frame_id = target_frame
+        refined.pose.position.x = float(center[0])
+        refined.pose.position.y = float(center[1])
+        refined.pose.position.z = float(center[2])
+        qx, qy, qz, qw = _normal_to_quaternion(normal)
+        refined.pose.orientation.x = float(qx)
+        refined.pose.orientation.y = float(qy)
+        refined.pose.orientation.z = float(qz)
+        refined.pose.orientation.w = float(qw)
+        self.refined_pub.publish(refined)
+
+    def _reset_refinement_lock(self, reason):
+        if self._refined_locked or self._candidate_window:
+            self.get_logger().info(f"[D405 REFINE] lock reset: {reason}")
+        self._candidate_window = []
+        self._refined_locked = False
+        self._capture_pending = not self.require_capture_trigger
+        self._capture_deadline = 0.0
+
+    @staticmethod
+    def _corner_signature_from_msg(msg):
+        return tuple(
+            tuple(
+                round(float(v), 3)
+                for v in (p.position.x, p.position.y, p.position.z)
+            )
+            for p in msg.poses[:4]
         )
 
     def _select_surface_roi(self, points, p0, n0, target_frame):

@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rb">
+  <xacro:arg name="robot_ip" default="10.0.2.7"/>
+  <xacro:arg name="use_fake_hardware" default="false"/>
+  <xacro:arg name="use_isaac_sim" default="true"/>
+  <xacro:arg name="fake_sensor_commands" default="false"/>
+  <xacro:arg name="cb_simulation" default="false"/>
+  <xacro:arg name="model_id" default="rb10_1300e_u"/>
+
+  <xacro:include filename="$(find rbpodo_moveit_config)/config/rbpodo.urdf.xacro"/>
+  <xacro:include filename="$(find eoat_description)/urdf/rr_00a_b_eoat_no_camera_d405.urdf.xacro"/>
+
+  <!-- AFT200 CAD local +Z is installed along TCP local -Y. -->
+  <link name="aft200_link">
+    <visual name="aft200_visual">
+      <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+      <geometry>
+        <mesh filename="package://eoat_description/meshes/aft200_visual.stl"/>
+      </geometry>
+      <material name="aft200_gray">
+        <color rgba="0.72 0.72 0.70 1.0"/>
+      </material>
+    </visual>
+    <collision name="aft200_collision">
+      <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+      <geometry>
+        <mesh filename="package://eoat_description/meshes/aft200_collision.stl"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.0116 -0.0261 0" rpy="0 0 0"/>
+      <mass value="0.52"/>
+      <inertia ixx="0.00031" ixy="0" ixz="0" iyy="0.00061" iyz="0" izz="0.00050"/>
+    </inertial>
+  </link>
+
+  <joint name="aft200_fixed_joint" type="fixed">
+    <parent link="tcp"/>
+    <child link="aft200_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- RR-00A_B no-camera mesh center is after AFT200:
+       TCP -Y = 0.0522m + 0.2305m/2 = 0.16745m. -->
+  <xacro:rr_00a_b_eoat_no_camera_d405
+    parent="tcp"
+    prefix="paint_"
+    xyz="0 -0.16745 0"
+    rpy="1.57079632679 0 0"
+    mass="1.072"/>
+</robot>

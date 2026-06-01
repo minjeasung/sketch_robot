@@ -20,9 +20,9 @@
       rpy
       mass
       use_nominal_extrinsics:=true
-      d405_x:=0.00905
-      d405_y:=0.04375
-      d405_z:=-0.09105
+      d405_x:=0.00005
+      d405_y:=0.02275
+      d405_z:=-0.10190
       d405_roll:=0
       d405_pitch:=-1.57079632679
       d405_yaw:=-1.57079632679">
@@ -34,6 +34,11 @@
       rpy="${rpy}"
       mass="${mass}"/>
 
+    <!--
+      Intel's D405 macro origin is the bottom screw frame, not camera_link.
+      These defaults place paint_d405_link at TCP xyz=(0.00905,-0.07640,0.04375),
+      matching the Isaac Sim D405 pose and keeping the rear face on the EOAT bracket.
+    -->
     <xacro:sensor_d405
       parent="${prefix}eoat_no_camera_link"
       name="${prefix}d405"

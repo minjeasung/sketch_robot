@@ -72,7 +72,9 @@ No-camera EOAT with D405 mounted:
   mass="1.072"/>
 ```
 
-The D405 macro comes from Intel RealSense `realsense2_description`. Its default
-mount in this package places the D405 bottom screw frame on the no-camera EOAT
-link at `xyz="0.00905 0.04375 -0.09105"` and
+The D405 macro comes from Intel RealSense `realsense2_description`. Its origin
+is the bottom screw frame, so this package offsets that screw frame to place the
+actual D405 camera link at TCP `xyz="0.00905 -0.07640 0.04375"`, matching the
+Isaac Sim EOAT pose. The default no-camera EOAT-local mount is
+`xyz="0.00005 0.02275 -0.10190"` and
 `rpy="0 -1.57079632679 -1.57079632679"`.

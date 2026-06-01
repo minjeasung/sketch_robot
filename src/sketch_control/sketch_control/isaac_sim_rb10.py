@@ -22,7 +22,7 @@ base 좌표로 변환해 배치한다:
   - ground plane (z=-0.823, 실제 바닥 — 테이블 다리 끝)
 
 퍼블리시 (OmniGraph): /joint_states, /tf
-구독 (OmniGraph): /joint_command
+구독 (OmniGraph): /isaac_joint_command
 """
 import os
 import numpy as np
@@ -113,8 +113,8 @@ print(f"[OK] RB10 USD root Z축 +90° 회전 적용 (World=real base, link0=URDF
 # ---- Joint drive 강제 적용 (URDF→USD 변환 시 drive 누락 가능) ------------------
 # 모든 revolute joint 에 UsdPhysics.DriveAPI 추가. stiffness/damping 미설정 시
 # articulation 의 position drive 가 0 토크로 시뮬되어 중력에 굴복.
-JOINT_STIFFNESS = float(os.environ.get("RB10_SIM_JOINT_STIFFNESS", "6000.0"))
-JOINT_DAMPING = float(os.environ.get("RB10_SIM_JOINT_DAMPING", "600.0"))
+JOINT_STIFFNESS = float(os.environ.get("RB10_SIM_JOINT_STIFFNESS", "2500.0"))
+JOINT_DAMPING = float(os.environ.get("RB10_SIM_JOINT_DAMPING", "300.0"))
 _n_drives = 0
 for _p in stage.Traverse():
     if not _p.GetPath().pathString.startswith(RB10_PRIM_PATH):
@@ -617,11 +617,11 @@ EOAT_MESH_CENTER_OFFSET = (
     0.0,
 )
 
-ROLLER_FORWARD_REACH = 0.209475
 ROLLER_SUPPORT_RADIUS = 0.012
-ROLLER_LENGTH = 0.18    # 축 방향
-ROLLER_RADIUS = 0.025   # Φ50mm
+ROLLER_LENGTH = 0.22    # 축 방향, STEP bbox 기준
+ROLLER_RADIUS = 0.0385  # Φ77mm, STEP/STL bbox 기준
 ROLLER_LONG_AXIS = "+X"
+ROLLER_FORWARD_REACH = EOAT_MESH_FORWARD_LENGTH - ROLLER_RADIUS
 EOAT_TIP_OFFSET = AFT200_LENGTH + ROLLER_FORWARD_REACH
 
 # Intel RealSense D405 official description (realsense2_description r/4.58.2).
@@ -636,6 +636,7 @@ D405_MESH_SCALE = 0.001
 D405_VISUAL_ORIGIN = np.array([0.0038, -0.009, 0.0], dtype=float)
 D405_VISUAL_RPY = (np.pi / 2.0, 0.0, np.pi / 2.0)
 D405_CAMERA_RPY_IN_TCP = (0.0, 0.0, -np.pi / 2.0)
+D405_CAMERA_PRIM_PATH = None
 
 
 def _axis_offset_local(axis, distance):
@@ -772,7 +773,8 @@ else:
     # 기존 prim 있으면 제거 (반복 실행 안전). apriltag 는 이전 버전 잔여물 정리용.
     for _old in [
         "paint_roller", "roller_rod", "aft200", "roller_support",
-        "rr_00a_b_eoat", "d405", "realsense_d405", "apriltag",
+        "rr_00a_b_eoat", "d405", "d405_depth_camera",
+        "realsense_d405", "apriltag",
     ]:
         _pp = TCP_PRIM_PATH + "/" + _old
         if stage.GetPrimAtPath(_pp).IsValid():
@@ -836,11 +838,28 @@ else:
         _d405_xf.AddTranslateOp().Set(Gf.Vec3d(*D405_COLLISION_CENTER))
         _d405_xf.AddScaleOp().Set(Gf.Vec3f(*D405_SIZE))
 
+    D405_CAMERA_PRIM_PATH = TCP_PRIM_PATH + "/d405_depth_camera"
+    _d405_cam = UsdGeom.Camera.Define(stage, D405_CAMERA_PRIM_PATH)
+    _d405_cam.CreateClippingRangeAttr(Gf.Vec2f(0.04, 1.50))
+    # Approximate D405 depth FOV. The exact intrinsics come from the generated
+    # CameraInfo, so consistency matters more than cosmetic visual fidelity here.
+    _d405_cam.CreateFocalLengthAttr(2.0)
+    _d405_cam.CreateHorizontalApertureAttr(3.8)
+    _d405_cam.CreateVerticalApertureAttr(2.85)
+    _d405_cam_xf = UsdGeom.Xformable(_d405_cam.GetPrim())
+    _d405_cam_m = Gf.Matrix4d(1.0)
+    # USD cameras look along local -Z. Rotate so local -Z points along TCP -Y,
+    # matching the physical D405 forward direction on the EOAT.
+    _d405_cam_m.SetRotateOnly(Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), -90.0))
+    _d405_cam_m.SetTranslateOnly(Gf.Vec3d(*D405_LINK_POSITION))
+    _d405_cam_xf.AddTransformOp().Set(_d405_cam_m)
+
     print(f"[OK] AFT200 + RR-00A_B EOAT(no-camera) + D405 부착: {_aft_path}, {_roller_path}, {_d405_path}")
     print(f"     장착 방향 (TCP local): {TOOL_AXIS}, tip offset={EOAT_TIP_OFFSET:.6f}m")
     print(f"     AFT200: STL visual={AFT200_STL_PATH}, collision proxy size={AFT200_SIZE}")
     print(f"     EOAT(no-camera): STL visual={EOAT_STL_PATH}, center offset={EOAT_MESH_CENTER_OFFSET}")
     print(f"     D405: official STL visual={D405_STL_PATH}, link pos={D405_LINK_POSITION}, collision center={D405_COLLISION_CENTER}")
+    print(f"     D405 depth camera prim: {D405_CAMERA_PRIM_PATH}")
 
 # ==== ROS2 OmniGraph (Step 5) ==================================================
 
@@ -930,7 +949,7 @@ og.Controller.edit(
         keys.SET_VALUES: [
             ("WriteJC.inputs:robotPath", ARTICULATION_PATH),
             ("PubJS.inputs:topicName", "/joint_states"),
-            ("SubJC.inputs:topicName", "/joint_command"),
+            ("SubJC.inputs:topicName", "/isaac_joint_command"),
             ("PubJS.inputs:targetPrim", [usdrt.Sdf.Path(ARTICULATION_PATH)]),
         ],
     },
@@ -1070,6 +1089,61 @@ _imu_rel = _imu_node_prim.GetRelationship("inputs:imuPrim") or \
            _imu_node_prim.CreateRelationship("inputs:imuPrim", custom=False)
 _imu_rel.SetTargets([Sdf.Path(IMU_PRIM_PATH)])
 
+# ---- Wrist D405 depth stream --------------------------------------------------
+# The visible D405 STL alone is not a sensor. Add a small USD camera under TCP and
+# publish its depth image + CameraInfo; rb10_perception_sketch.launch.py converts
+# these into /d405/d405/depth/color/points for local surface refinement.
+D405_RES_W = 640
+D405_RES_H = 480
+D405_FRAME_SKIP = 1
+D405_DEPTH_TOPIC = "/d405/d405/depth/image_rect_raw"
+D405_DEPTH_INFO_TOPIC = "/d405/d405/depth/camera_info"
+D405_OPTICAL_FRAME_ID = "d405_color_optical_frame"
+
+if D405_CAMERA_PRIM_PATH and stage.GetPrimAtPath(D405_CAMERA_PRIM_PATH).IsValid():
+    og.Controller.edit(
+        {"graph_path": "/World/D405ROS2Graph", "evaluator_name": "execution"},
+        {
+            keys.CREATE_NODES: [
+                ("OnTick", NT_TICK),
+                ("D405RP", NT_CREATE_RP),
+                ("DepthHelper", NT_CAMERA_HELPER),
+                ("CamInfoDepth", NT_CAMERA_INFO_HELPER),
+            ],
+            keys.CONNECT: [
+                ("OnTick.outputs:tick", "D405RP.inputs:execIn"),
+                ("D405RP.outputs:execOut", "DepthHelper.inputs:execIn"),
+                ("D405RP.outputs:execOut", "CamInfoDepth.inputs:execIn"),
+                ("D405RP.outputs:renderProductPath",
+                 "DepthHelper.inputs:renderProductPath"),
+                ("D405RP.outputs:renderProductPath",
+                 "CamInfoDepth.inputs:renderProductPath"),
+            ],
+            keys.SET_VALUES: [
+                ("D405RP.inputs:width", D405_RES_W),
+                ("D405RP.inputs:height", D405_RES_H),
+                ("DepthHelper.inputs:type", "depth"),
+                ("DepthHelper.inputs:topicName", D405_DEPTH_TOPIC),
+                ("DepthHelper.inputs:frameId", D405_OPTICAL_FRAME_ID),
+                ("DepthHelper.inputs:frameSkipCount", D405_FRAME_SKIP),
+                ("CamInfoDepth.inputs:topicName", D405_DEPTH_INFO_TOPIC),
+                ("CamInfoDepth.inputs:frameId", D405_OPTICAL_FRAME_ID),
+                ("CamInfoDepth.inputs:frameSkipCount", D405_FRAME_SKIP),
+            ],
+        },
+    )
+    _d405_rp_prim = stage.GetPrimAtPath("/World/D405ROS2Graph/D405RP")
+    _d405_cam_rel = _d405_rp_prim.GetRelationship("inputs:cameraPrim") or \
+        _d405_rp_prim.CreateRelationship("inputs:cameraPrim", custom=False)
+    _d405_cam_rel.SetTargets([Sdf.Path(D405_CAMERA_PRIM_PATH)])
+    print("[OK] ROS2 OmniGraph: D405ROS2Graph 생성")
+    print(f"     Camera    : {D405_CAMERA_PRIM_PATH}")
+    print(f"     Resolution: {D405_RES_W}x{D405_RES_H} @ {60//(D405_FRAME_SKIP+1)} Hz")
+    print(f"     Topics    : {D405_DEPTH_TOPIC}")
+    print(f"                 {D405_DEPTH_INFO_TOPIC}")
+else:
+    print("[WARN] D405 camera prim 없음 — D405 depth/pointcloud 발행 skip")
+
 print("[OK] ROS2 OmniGraph: TFGraph + JointGraph + ClockGraph + ZedROS2Graph 생성")
 print(f"     Cameras   : {_LEFT_CAM}, {_RIGHT_CAM}")
 print(f"     IMU       : {IMU_PRIM_PATH}")
@@ -1189,7 +1263,7 @@ print(f"  Mount ball:  center={MOUNT_BALL_CENTER.tolist()} r={MOUNT_BALL_RADIUS}
 print(f"  Mount bolt:  center={MOUNT_BOLT_CENTER.tolist()} r={MOUNT_BOLT_RADIUS} h={MOUNT_BOLT_HEIGHT}")
 print(f"  EOAT:        tcp -> AFT200 -> RR-00A_B(no-camera)+D405, tcp local {TOOL_AXIS}, "
       f"tip offset={EOAT_TIP_OFFSET:.6f}m, mesh={EOAT_STL_PATH}")
-print(f"  ROS topics:  /joint_states, /joint_command, /tf, /clock,")
+print(f"  ROS topics:  /joint_states, /isaac_joint_command, /tf, /clock,")
 print(f"               /zed/zed_node/rgb/color/rect/image (+camera_info),")
 print(f"               /zed/zed_node/depth/depth_registered (+camera_info),")
 print(f"               /zed/zed_node/imu/data")
