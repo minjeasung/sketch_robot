@@ -1,7 +1,12 @@
 """
 Isaac Sim 5.1 — RB10-1300E_U 시뮬레이션 환경 (Phase 4 Session 4 셋업)
 
-좌표계: world = link0 (RB10 base) = (0, 0, 0), 단위 미터, TCP frame 정렬
+좌표계: world / World = 실제 RB10 pendant/base = (0, 0, 0), 단위 미터.
+rbpodo URDF 의 link0 는 실제 base 와 Z축 기준 90도 차이가 있어 RB10 USD root 에
++90도 보정을 적용한다.
+기존 환경 측정값은 READY_POSE 의 TCP 축으로 기록되어 있었으므로, 본 파일에서
+base 좌표로 변환해 배치한다:
+  tcp x = base y, tcp y = base -x, tcp z = base z
 환경 측정값 출처: docs/phase4_session4_environment.md (2026-05-12)
 
 실행: (ROS2 bridge 환경 필요 — run_isaac_sim.sh 와 동일 LD_LIBRARY_PATH 셋업)
@@ -9,18 +14,20 @@ Isaac Sim 5.1 — RB10-1300E_U 시뮬레이션 환경 (Phase 4 Session 4 셋업)
     isaacsim --exec ~/sketch_robot_ws/src/sketch_control/sketch_control/isaac_sim_rb10.py
 
 씬 구성:
-  - RB10 USD (link0 = world 원점)
-  - 테이블 (0.6×0.8×0.813 m, z ∈ [-0.823, -0.010])
-  - 철판 (0.6×0.8×0.010 m, z ∈ [-0.010, 0])
-  - 벽 (y=-0.78 평면, 1.0×1.0 m, 두께 0.05m)
-  - ZED 카메라 prim (-0.25, 0.7, 0.9) → 벽 향함
+  - RB10 USD (URDF link0 를 World/real base 에 대해 +90도 보정)
+  - 테이블 (base 0.6×0.8×0.813 m, z ∈ [-0.823, -0.010])
+  - 철판 (0.2×0.2×0.010 m, z ∈ [-0.010, 0])
+  - 벽 (base x=+0.80 평면, 2.0×1.5 m, 두께 0.02m)
+  - ZED 카메라 prim (base -0.5, 0.2, 1.0) → 벽 향함
   - ground plane (z=-0.823, 실제 바닥 — 테이블 다리 끝)
 
 퍼블리시 (OmniGraph): /joint_states, /tf
 구독 (OmniGraph): /joint_command
 """
+import os
 import numpy as np
 import time as _time
+import struct
 import omni
 import omni.kit.app
 import omni.graph.core as og
@@ -69,6 +76,18 @@ except ImportError:
 RB10_USD_PATH = "/home/minjea/sketch_robot_ws/isaac_assets/rb10_1300e_u.usd"
 RB10_PRIM_PATH = "/World/rb10"
 
+
+def _tcp_authored_xyz_to_base(v):
+    """READY_POSE TCP 축으로 기록한 좌표를 RB10 base(link0) 좌표로 변환."""
+    x_tcp, y_tcp, z_tcp = np.asarray(v, dtype=float)
+    return np.array([-y_tcp, x_tcp, z_tcp], dtype=float)
+
+
+def _tcp_authored_box_size_to_base(v):
+    """축 정렬 box size: tcp X/Y 축이 base Y/-X 로 바뀌므로 X/Y 크기를 교환."""
+    sx_tcp, sy_tcp, sz_tcp = np.asarray(v, dtype=float)
+    return np.array([sy_tcp, sx_tcp, sz_tcp], dtype=float)
+
 # ---- 월드 + ground plane ------------------------------------------------------
 stage = omni.usd.get_context().get_stage()
 world = World(stage_units_in_meters=1.0)
@@ -81,20 +100,21 @@ print(f"[OK] World + ground plane (z=-0.823, 실제 바닥)")
 add_reference_to_stage(usd_path=RB10_USD_PATH, prim_path=RB10_PRIM_PATH)
 print(f"[OK] RB10 USD reference 추가: {RB10_USD_PATH} → {RB10_PRIM_PATH}")
 
-# RB10 USD 의 base frame 이 펜던트 좌표축과 90° 어긋남 → 시계방향 -90° (Z축) 회전.
-# 회전 후: USD local +X → world -Y, USD local +Y → world +X (펜던트 X-Y 와 일치)
+# 실제 RB10 pendant/base 좌표와 rbpodo URDF link0 는 Z축 기준 90도 차이가 있다.
+# 같은 조인트값에서 URDF FK 결과를 +90도 회전하면 pendant TCP 위치와 일치한다.
+# 따라서 Isaac World 는 실제 base 로 두고, URDF/USD 로봇 root 만 +90도 보정한다.
 _rb10_root_prim = stage.GetPrimAtPath(RB10_PRIM_PATH)
 _rb10_xform = UsdGeom.Xformable(_rb10_root_prim)
 for _op in _rb10_xform.GetOrderedXformOps():
     _rb10_xform.GetPrim().RemoveProperty(_op.GetOpName())
-_rb10_xform.AddRotateZOp().Set(-90.0)  # degrees, 시계방향 90°
-print(f"[OK] RB10 base Z축 -90° (시계방향) 회전 적용")
+_rb10_xform.AddRotateZOp().Set(90.0)
+print(f"[OK] RB10 USD root Z축 +90° 회전 적용 (World=real base, link0=URDF base)")
 
 # ---- Joint drive 강제 적용 (URDF→USD 변환 시 drive 누락 가능) ------------------
 # 모든 revolute joint 에 UsdPhysics.DriveAPI 추가. stiffness/damping 미설정 시
 # articulation 의 position drive 가 0 토크로 시뮬되어 중력에 굴복.
-JOINT_STIFFNESS = 10000.0
-JOINT_DAMPING = 100.0
+JOINT_STIFFNESS = float(os.environ.get("RB10_SIM_JOINT_STIFFNESS", "6000.0"))
+JOINT_DAMPING = float(os.environ.get("RB10_SIM_JOINT_DAMPING", "600.0"))
 _n_drives = 0
 for _p in stage.Traverse():
     if not _p.GetPath().pathString.startswith(RB10_PRIM_PATH):
@@ -129,13 +149,13 @@ if ARTICULATION_PATH is None:
 robot = world.scene.add(Robot(prim_path=ARTICULATION_PATH, name="rb10"))
 
 # ---- 테이블 + 철판 (docs/phase4_session4_environment.md) -----------------------
-# 좌표 범위로부터 size/center 계산.
-# 테이블: x∈[-0.35,+0.45] y∈[-0.20,+0.40] z∈[-0.823,-0.010] (x 0.8m, y 0.6m)
-TABLE_SIZE = np.array([0.80, 0.60, 0.813])
-TABLE_CENTER = np.array([0.05, 0.10, -0.4165])
-# 철판: x∈[-0.1,+0.1] y∈[-0.1,+0.1] z∈[-0.010, 0]  (200mm 정사각형, 사용자 갱신)
-PLATE_SIZE = np.array([0.20, 0.20, 0.010])
-PLATE_CENTER = np.array([0.0, 0.0, -0.005])
+# 기존 측정값은 TCP축 기준이므로 base 좌표로 변환해 배치한다.
+# TCP 기준 테이블: x∈[-0.35,+0.45] y∈[-0.20,+0.40] z∈[-0.823,-0.010]
+TABLE_SIZE = _tcp_authored_box_size_to_base([0.80, 0.60, 0.813])
+TABLE_CENTER = _tcp_authored_xyz_to_base([0.05, 0.10, -0.4165])
+# 철판: TCP 기준 x/y 200mm 정사각형이라 base 변환 후에도 size 동일.
+PLATE_SIZE = _tcp_authored_box_size_to_base([0.20, 0.20, 0.010])
+PLATE_CENTER = _tcp_authored_xyz_to_base([0.0, 0.0, -0.005])
 
 world.scene.add(VisualCuboid(
     prim_path="/World/table",
@@ -157,11 +177,12 @@ print(f"[OK] 철판 추가: center={PLATE_CENTER.tolist()} size={PLATE_SIZE.toli
 
 # ---- 벽 + 작업 영역 (Phase 5 일감 2.3) -----------------------------------------
 # 큰 벽 plane (2.0 × 1.5m, 흰색) + 노란 마스킹 테이프 4 strip 으로 0.5 × 0.4m
-# 작업 영역 outline. AprilTag eye-to-hand calibration + RANSAC plane 인식의 시각
-# baseline. 벽 표면 = y=-0.8 (front surface, +Y normal RB10 향함).
-WALL_SIZE = np.array([2.0, 0.02, 1.5])
-WALL_CENTER = np.array([0.0, -0.81, 0.5])                    # center: -0.8 - thickness/2
-_WALL_FRONT_Y = float(WALL_CENTER[1] + WALL_SIZE[1] / 2.0)   # -0.80
+# 작업 영역 outline. RANSAC plane 인식과 sketch projection 의 시각 baseline.
+# TCP 기준 벽 표면 y=-0.8 은 base 기준 x=+0.8 이다.
+# 벽 front surface normal 은 base -X 방향(RB10/자유공간 방향).
+WALL_SIZE = _tcp_authored_box_size_to_base([2.0, 0.02, 1.5])
+WALL_CENTER = _tcp_authored_xyz_to_base([0.0, -0.81, 0.5])
+_WALL_FRONT_X = float(WALL_CENTER[0] - WALL_SIZE[0] / 2.0)   # +0.80
 
 world.scene.add(VisualCuboid(
     prim_path="/World/wall",
@@ -171,32 +192,32 @@ world.scene.add(VisualCuboid(
     color=np.array([0.92, 0.92, 0.92]),                      # 밝은 회색
 ))
 print(f"[OK] 벽 추가: center={WALL_CENTER.tolist()} size={WALL_SIZE.tolist()} "
-      f"front_y={_WALL_FRONT_Y}")
+      f"front_x={_WALL_FRONT_X}")
 
-# 노란 마스킹 테이프 (4 strip, 작업 영역 0.5×0.4 outline). 벽 표면 +Y 1mm 앞에
+# 노란 마스킹 테이프 (4 strip, 작업 영역 0.5×0.4 outline). 벽 표면 -X 1mm 앞에
 # 띄워 z-fighting 회피. tape 폭 0.02m.
-WORK_AREA_W = 0.5                                            # x 방향 (가로)
+WORK_AREA_W = 0.5                                            # base y 방향 (가로)
 WORK_AREA_H = 0.4                                            # z 방향 (세로)
-WORK_AREA_CENTER = np.array([0.0, _WALL_FRONT_Y + 0.001, 0.5])
+WORK_AREA_CENTER = np.array([_WALL_FRONT_X - 0.001, 0.0, 0.5])
 TAPE_W = 0.02
 _TAPE_COLOR = np.array([1.0, 0.85, 0.0])                     # 선명한 노랑
-_TAPE_Y = float(WORK_AREA_CENTER[1])                         # 벽 surface + 1mm
+_TAPE_X = float(WORK_AREA_CENTER[0])                         # 벽 surface - 1mm
 
-# Outline outer corners: x = ±(WORK_AREA_W/2), z = WORK_AREA_CENTER[2] ± (WORK_AREA_H/2).
-_x_outer = float(WORK_AREA_W / 2.0)                          # 0.25
+# Outline outer corners: y = ±(WORK_AREA_W/2), z = WORK_AREA_CENTER[2] ± (WORK_AREA_H/2).
+_y_outer = float(WORK_AREA_W / 2.0)                          # 0.25
 _z_top   = float(WORK_AREA_CENTER[2] + WORK_AREA_H / 2.0)    # 0.70
 _z_bot   = float(WORK_AREA_CENTER[2] - WORK_AREA_H / 2.0)    # 0.30
 
 _tape_strips = [
-    # name, center, scale  (tape thickness in Y = 0.001 — paper-thin)
-    ("Top",    np.array([0.0, _TAPE_Y, _z_top - TAPE_W/2]),
-                np.array([WORK_AREA_W, 0.001, TAPE_W])),
-    ("Bottom", np.array([0.0, _TAPE_Y, _z_bot + TAPE_W/2]),
-                np.array([WORK_AREA_W, 0.001, TAPE_W])),
-    ("Left",   np.array([-_x_outer + TAPE_W/2, _TAPE_Y, WORK_AREA_CENTER[2]]),
-                np.array([TAPE_W, 0.001, WORK_AREA_H])),
-    ("Right",  np.array([ _x_outer - TAPE_W/2, _TAPE_Y, WORK_AREA_CENTER[2]]),
-                np.array([TAPE_W, 0.001, WORK_AREA_H])),
+    # name, center, scale  (tape thickness in X = 0.001 — paper-thin)
+    ("Top",    np.array([_TAPE_X, 0.0, _z_top - TAPE_W/2]),
+                np.array([0.001, WORK_AREA_W, TAPE_W])),
+    ("Bottom", np.array([_TAPE_X, 0.0, _z_bot + TAPE_W/2]),
+                np.array([0.001, WORK_AREA_W, TAPE_W])),
+    ("Left",   np.array([_TAPE_X, -_y_outer + TAPE_W/2, WORK_AREA_CENTER[2]]),
+                np.array([0.001, TAPE_W, WORK_AREA_H])),
+    ("Right",  np.array([_TAPE_X,  _y_outer - TAPE_W/2, WORK_AREA_CENTER[2]]),
+                np.array([0.001, TAPE_W, WORK_AREA_H])),
 ]
 for _name, _center, _scale in _tape_strips:
     world.scene.add(VisualCuboid(
@@ -209,24 +230,24 @@ for _name, _center, _scale in _tape_strips:
 print(f"[OK] 마스킹 테이프 4 strip: outline {WORK_AREA_W}m × {WORK_AREA_H}m "
       f"@ z=[{_z_bot}, {_z_top}], tape_w={TAPE_W}m")
 
-# Ground truth: 작업 영역 4 outer corners (벽 surface y=_WALL_FRONT_Y).
+# Ground truth: 작업 영역 4 outer corners (벽 surface x=_WALL_FRONT_X).
 WORK_AREA_CORNERS = [
-    ("tl", [-_x_outer, _WALL_FRONT_Y, _z_top]),
-    ("tr", [ _x_outer, _WALL_FRONT_Y, _z_top]),
-    ("bl", [-_x_outer, _WALL_FRONT_Y, _z_bot]),
-    ("br", [ _x_outer, _WALL_FRONT_Y, _z_bot]),
+    ("tl", [_WALL_FRONT_X, -_y_outer, _z_top]),
+    ("tr", [_WALL_FRONT_X,  _y_outer, _z_top]),
+    ("bl", [_WALL_FRONT_X, -_y_outer, _z_bot]),
+    ("br", [_WALL_FRONT_X,  _y_outer, _z_bot]),
 ]
 for _cid, _w in WORK_AREA_CORNERS:
     print(f"[DIAG] work_area corner {_cid} = ({_w[0]:.4f}, {_w[1]:.4f}, {_w[2]:.4f})")
 
 # ---- 카메라 마운트 (ㄴ자 알루미늄 프레임, 50×50mm 단면) ------------------------
-# 세그먼트1: 수평 (책상 위, +Y 방향으로 누움), 책상 위에 얹힘
+# 세그먼트1: 수평 (책상 위, base X 방향으로 누움), 책상 위에 얹힘
 # 세그먼트2: 수직 (세그먼트1 위에서 솟음)
 # 둘이 합쳐 ㄴ자 — z 적층 합 0.9m
-MOUNT_SEG1_CENTER = np.array([0.2, 0.35, 0.015])
-MOUNT_SEG1_SIZE = np.array([0.05, 0.3, 0.05])    # z ∈ [-0.01, 0.04]
-MOUNT_SEG2_CENTER = np.array([0.2, 0.5, 0.465])
-MOUNT_SEG2_SIZE = np.array([0.05, 0.05, 0.85])   # z ∈ [0.04, 0.89]
+MOUNT_SEG1_CENTER = _tcp_authored_xyz_to_base([0.2, 0.35, 0.015])
+MOUNT_SEG1_SIZE = _tcp_authored_box_size_to_base([0.05, 0.3, 0.05])    # z ∈ [-0.01, 0.04]
+MOUNT_SEG2_CENTER = _tcp_authored_xyz_to_base([0.2, 0.5, 0.465])
+MOUNT_SEG2_SIZE = _tcp_authored_box_size_to_base([0.05, 0.05, 0.85])   # z ∈ [0.04, 0.89]
 _MOUNT_COLOR = np.array([0.6, 0.6, 0.65])        # 알루미늄 회색
 
 world.scene.add(VisualCuboid(
@@ -253,7 +274,7 @@ print(f"[OK] 카메라 마운트 세그먼트2 (수직): "
 # 체인 — MountSeg2 top → ball head (sphere) → 볼트 (cylinder) → ZED 바닥.
 # 실 ZED X 는 보통 swivel head 로 부착, 1/4" 볼트 1점 → 시뮬도 동일 chain 으로
 # hand-eye calib 시 sim/real transform parameterization 일치.
-MOUNT_BALL_CENTER = np.array([0.2, 0.5, 0.92])      # Seg2 top (0.89) 위 +0.03m
+MOUNT_BALL_CENTER = _tcp_authored_xyz_to_base([0.2, 0.5, 0.92])      # Seg2 top (0.89) 위 +0.03m
 MOUNT_BALL_RADIUS = 0.025                            # Φ50mm
 _MOUNT_BALL_COLOR = (0.08, 0.08, 0.08)               # 검은 ball head
 _ball_sphere = UsdGeom.Sphere.Define(stage, "/World/CameraMount_Ballhead")
@@ -266,7 +287,7 @@ print(f"[OK] 카메라 마운트 ball head: "
       f"center={MOUNT_BALL_CENTER.tolist()} radius={MOUNT_BALL_RADIUS}")
 
 # 1/4" 볼트 (시각용, ball top 과 카메라 바닥 사이 연결)
-MOUNT_BOLT_CENTER = np.array([0.2, 0.5, 0.95])      # ball top (0.945) 위 +0.005m
+MOUNT_BOLT_CENTER = _tcp_authored_xyz_to_base([0.2, 0.5, 0.95])      # ball top (0.945) 위 +0.005m
 MOUNT_BOLT_RADIUS = 0.004                            # Φ8mm
 MOUNT_BOLT_HEIGHT = 0.01
 _MOUNT_BOLT_COLOR = (0.55, 0.55, 0.60)              # 금속 회색
@@ -301,11 +322,11 @@ CAMERA_PATH = "/World/SketchCamera"
 _BALL_TOP_Z = float(MOUNT_BALL_CENTER[2] + MOUNT_BALL_RADIUS)             # 0.945
 _BOLT_TOP_Z = float(MOUNT_BOLT_CENTER[2] + MOUNT_BOLT_HEIGHT / 2.0)       # 0.955
 CAMERA_EYE = Gf.Vec3d(
-    float(MOUNT_BALL_CENTER[0]),            # 0.2
-    float(MOUNT_BALL_CENTER[1]),            # 0.5
+    float(MOUNT_BALL_CENTER[0]),            # -0.5
+    float(MOUNT_BALL_CENTER[1]),            # 0.2
     _BOLT_TOP_Z + 0.045,                    # 1.0 (bolt top + 본체 mesh extent buffer)
 )
-CAMERA_TARGET = Gf.Vec3d(0.0, -0.78, 0.5)
+CAMERA_TARGET = Gf.Vec3d(_WALL_FRONT_X, 0.0, 0.5)
 ZED_X_USD_PATH = (
     "/home/minjea/sketch_robot_ws/zed-isaac-sim/"
     "exts/sl.sensor.camera/data/usd/ZED_X.usdc"
@@ -494,45 +515,32 @@ except Exception as _e:
 #   6) set_gains — drive PD gain 조정 (USD drive 가 약할 경우)
 # Drive 가 정상이면 위만으로 자세 유지. physics callback 으로 강제 holding 안 함.
 #
-# WORK_POSE — moveit_executor.py 의 READY_POSE_JOINTS 와 동일. 측정일 2026-05-12,
-#   TCP 위치 (0.173, -0.153, 0.739), 롤러 -Y (wall) 향함, TCP frame ≈ world frame.
+# WORK_POSE — 실제 RB10 pendant/driver 에서 읽은 작업 시작 자세.
+#   moveit_executor.py 의 READY_POSE_JOINTS 와 동일하게 유지한다.
 #   weld/sketch 작업 시 사용 pose.
 WORK_POSE = {
-    "base":     0.0005,   # J0 +0.03°
-    "shoulder": -0.9343,  # J1 -53.53°
-    "elbow":    2.4247,   # J2 +138.92°
-    "wrist1":  -1.6293,   # J3 -93.35°
-    "wrist2":   1.5676,   # J4 +89.81°
-    "wrist3":   0.0000,   # J5 0°
+    "base":     0.0005,   # pendant: +0.03 deg
+    "shoulder": -0.9343,  # pendant: -53.53 deg
+    "elbow":    2.4246,   # pendant: +138.92 deg
+    "wrist1":  -1.6293,   # pendant: -93.35 deg
+    "wrist2":   1.5675,   # pendant: +89.81 deg
+    "wrist3":   0.0000,
 }
 
-# CALIB_POSE — eye-to-hand AprilTag calibration 용. WORK_POSE 의 TCP 를 world X 축
-# 기준 ~±90° 회전 → roller (TCP -Y) 가 world +Z (위), AprilTag (TCP +Z) 가
-# world +Y (camera face-on). URDF wrist 축이 wrist1=(0,1,0), wrist2=(0,0,1),
-# wrist3=(0,1,0) — world 에 trace 한 결과 직접 IK 없이 한 wrist 만 ±π/2 조정해
-# viewport 시각 검증으로 결정. 4 candidate (1 줄 토글):
-#
-#   CALIB_DELTA = ("wrist1", -1)    → wrist1 = -0.0581 (현 -1.6293 + π/2)
-#   CALIB_DELTA = ("wrist1", -1)    → wrist1 = -3.1997 (현 -1.6293 - π/2)  ※ limit -2π 근접
-#   CALIB_DELTA = ("wrist2", +1)    → wrist2 =  3.1392 (현  1.5676 + π/2)  ※ limit +π 근접
-#   CALIB_DELTA = ("wrist2", -1)    → wrist2 = -0.0040 (현  1.5676 - π/2)
-#
-# 각 후보마다 rqt_image_view 에서:
-#   - roller 가 world +Z (위) 향하는지
-#   - AprilTag 가 카메라 face-on (sharp pattern 정면) 으로 보이는지
-# 둘 다 만족하는 candidate 가 정답. 결정 후 한 줄 fixed.
+# CALIB_POSE — wrist 가동 범위 확인용. 기본 실행은 WORK_POSE 로 시작하고,
+# 필요할 때만 preset/service 로 사용한다.
 import math as _math_calib                                    # noqa: E402
 CALIB_DELTA = ("wrist1", -1)                                  # 첫 시도 — 시각 검증 후 조정
 CALIB_POSE = dict(WORK_POSE)
 CALIB_POSE[CALIB_DELTA[0]] += CALIB_DELTA[1] * (_math_calib.pi / 2.0)
 
-# 시작 시 적용할 pose — Phase 5 일감 2.4 (calibration) 동안 CALIB_POSE 사용.
-# 일감 2.5 완료 후 WORK_POSE 로 복귀 (한 줄 변경).
-READY_POSE_DICT = CALIB_POSE
-print(f"[OK] 시작 pose = CALIB_POSE (eye-to-hand calibration), "
-      f"delta={CALIB_DELTA[0]} {'+' if CALIB_DELTA[1] > 0 else '-'}π/2")
-print(f"     WORK_POSE:  wrist1={WORK_POSE['wrist1']:.4f}, "
-      f"wrist2={WORK_POSE['wrist2']:.4f}, wrist3={WORK_POSE['wrist3']:.4f}")
+# 시작 시 적용할 pose — 실제 로봇 작업 시작 자세.
+READY_POSE_DICT = WORK_POSE
+print(f"[OK] 시작 pose = WORK_POSE (real RB10 coordinates)")
+print(f"     WORK_POSE:  base={WORK_POSE['base']:.4f}, "
+      f"shoulder={WORK_POSE['shoulder']:.4f}, elbow={WORK_POSE['elbow']:.4f}, "
+      f"wrist1={WORK_POSE['wrist1']:.4f}, wrist2={WORK_POSE['wrist2']:.4f}, "
+      f"wrist3={WORK_POSE['wrist3']:.4f}")
 print(f"     CALIB_POSE: wrist1={CALIB_POSE['wrist1']:.4f}, "
       f"wrist2={CALIB_POSE['wrist2']:.4f}, wrist3={CALIB_POSE['wrist3']:.4f}")
 
@@ -590,29 +598,163 @@ try:
 except Exception as _e:
     print(f"[ERROR] READY_POSE 설정 실패: {_e}")
 
-# ---- 페인트 롤러 EOAT (tcp 자식 prim 으로 부착) --------------------------------
-# 가정 (시각 확인 후 수정):
-#   - TCP local -Y 가 EOAT 가 뻗어나가는 방향 → 롤러 중심까지 (0, -0.260, 0)
-#   - 롤러 cylinder long axis 는 손잡이와 직각 (가로 굴림용)
-# READY_POSE 시 롤러가 world -Y (벽 쪽) 으로 뻗어야 함.
+# ---- AFT200 + 페인트 롤러 EOAT (tcp 자식 prim 으로 부착) -----------------------
+# 체인: tcp -> AFT200 -> roller. 제공 CAD 는 +Z 방향으로 뻗지만 실제 장착은
+# TCP local -Y 방향이다. URDF link0 를 실제 base 로 +90도 보정하면 TCP local -Y
+# 가 base +X, 즉 벽/작업면 방향을 향한다.
 
+TOOL_AXIS = "-Y"
+AFT200_LENGTH = 0.0522
+AFT200_STL_PATH = "/home/minjea/Downloads/aft200_description/meshes/visual/aft200.stl"
+AFT200_SIZE = (0.104, AFT200_LENGTH, 0.082)  # TCP frame box size: x, y, z
+AFT200_CENTER = (-0.0116, -AFT200_LENGTH / 2.0, 0.0)
+
+EOAT_STL_PATH = "/home/minjea/sketch_robot_ws/src/eoat_description/meshes/rr_00a_b_eoat_no_camera_collision.stl"
+EOAT_MESH_FORWARD_LENGTH = 0.2305
+EOAT_MESH_CENTER_OFFSET = (
+    0.0,
+    -(AFT200_LENGTH + EOAT_MESH_FORWARD_LENGTH / 2.0),
+    0.0,
+)
+
+ROLLER_FORWARD_REACH = 0.209475
+ROLLER_SUPPORT_RADIUS = 0.012
 ROLLER_LENGTH = 0.18    # 축 방향
 ROLLER_RADIUS = 0.025   # Φ50mm
-ROLLER_OFFSET = 0.260   # TCP → roller center (axis 방향)
-ROLLER_AXIS = "-Y"      # TCP local 어느 축이 손잡이 방향. 시각 검증 후 수정.
+ROLLER_LONG_AXIS = "+X"
+EOAT_TIP_OFFSET = AFT200_LENGTH + ROLLER_FORWARD_REACH
 
-# axis 문자열 → translate 벡터 + cylinder long axis 결정
-_axis_letter = ROLLER_AXIS.lstrip("+-").upper()
-_axis_sign = -1.0 if ROLLER_AXIS.startswith("-") else 1.0
-_axis_index = {"X": 0, "Y": 1, "Z": 2}[_axis_letter]
-_offset_v = [0.0, 0.0, 0.0]
-_offset_v[_axis_index] = _axis_sign * ROLLER_OFFSET
-_mid_v = [0.0, 0.0, 0.0]
-_mid_v[_axis_index] = _axis_sign * ROLLER_OFFSET / 2.0
-# 롤러 long axis 는 손잡이와 직각. 시각 검증 결과 사용자 갱신:
-#   손잡이=Y → cylinder long axis = X (Y축 둘레 90° 회전 결과)
-_long_axis_map = {"X": "Y", "Y": "X", "Z": "X"}
-_roller_long_axis = _long_axis_map[_axis_letter]
+# Intel RealSense D405 official description (realsense2_description r/4.58.2).
+# Camera frame +X is its front direction; install it as TCP local -Y.
+D405_STL_PATH = "/home/minjea/sketch_robot_ws/src/vendor/realsense-ros/realsense2_description/meshes/d405.stl"
+D405_SIZE = (0.042, 0.023, 0.042)  # TCP frame bbox: x(width), y(depth), z(height)
+# Position from the removed D4xx camera volume in rr_00a_b_eoat_no_camera metadata.
+# Keep D405 optical/front direction aligned with EOAT forward, but sit it on the bracket.
+D405_LINK_POSITION = (0.00905, -0.07640, 0.04375)
+D405_COLLISION_CENTER = (0.0, -0.06870, 0.04375)
+D405_MESH_SCALE = 0.001
+D405_VISUAL_ORIGIN = np.array([0.0038, -0.009, 0.0], dtype=float)
+D405_VISUAL_RPY = (np.pi / 2.0, 0.0, np.pi / 2.0)
+D405_CAMERA_RPY_IN_TCP = (0.0, 0.0, -np.pi / 2.0)
+
+
+def _axis_offset_local(axis, distance):
+    sign = -1.0 if axis.startswith("-") else 1.0
+    letter = axis.lstrip("+-").upper()
+    out = [0.0, 0.0, 0.0]
+    out[{"X": 0, "Y": 1, "Z": 2}[letter]] = sign * distance
+    return out
+
+
+_axis_letter = TOOL_AXIS.lstrip("+-").upper()
+_roller_long_axis = ROLLER_LONG_AXIS.lstrip("+-").upper()
+_support_mid_v = _axis_offset_local(
+    TOOL_AXIS, AFT200_LENGTH + ROLLER_FORWARD_REACH / 2.0)
+_roller_center_v = _axis_offset_local(TOOL_AXIS, EOAT_TIP_OFFSET)
+
+
+def _cad_z_to_tcp_minus_y(x, y, z):
+    """CAD +Z 방향을 TCP local -Y 로 회전한다. Rx(+90deg): (x, y, z)->(x, -z, y)."""
+    return (float(x), float(-z), float(y))
+
+
+def _rpy_matrix(roll, pitch, yaw):
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=float)
+    ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=float)
+    rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=float)
+    return rz @ ry @ rx
+
+
+_D405_VISUAL_R = _rpy_matrix(*D405_VISUAL_RPY)
+_D405_CAMERA_R = _rpy_matrix(*D405_CAMERA_RPY_IN_TCP)
+_D405_LINK_P = np.array(D405_LINK_POSITION, dtype=float)
+
+
+def _d405_stl_to_tcp_frame(x, y, z):
+    """Official D405 STL(mm) -> RealSense camera_link -> TCP frame."""
+    p_camera_link = _D405_VISUAL_R @ (np.array([x, y, z], dtype=float) * D405_MESH_SCALE)
+    p_camera_link += D405_VISUAL_ORIGIN
+    p_tcp = _D405_CAMERA_R @ p_camera_link + _D405_LINK_P
+    return (float(p_tcp[0]), float(p_tcp[1]), float(p_tcp[2]))
+
+
+def _read_stl_points_transformed(stl_path, transform_vertex):
+    """STL vertex 를 읽고 transform_vertex(x,y,z) 결과를 USD point 로 만든다."""
+    with open(stl_path, "rb") as f:
+        data = f.read()
+
+    points = []
+    face_counts = []
+    face_indices = []
+
+    def _append_vertex(x, y, z):
+        points.append(Gf.Vec3f(*transform_vertex(x, y, z)))
+        return len(points) - 1
+
+    if len(data) >= 84:
+        tri_count = struct.unpack("<I", data[80:84])[0]
+        expected_len = 84 + tri_count * 50
+        if expected_len == len(data):
+            off = 84
+            for _ in range(tri_count):
+                off += 12  # normal
+                ids = []
+                for _v in range(3):
+                    x, y, z = struct.unpack("<fff", data[off:off + 12])
+                    off += 12
+                    ids.append(_append_vertex(x, y, z))
+                off += 2
+                face_counts.append(3)
+                face_indices.extend(ids)
+            return points, face_counts, face_indices
+
+    text = data.decode(errors="ignore")
+    tri = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("vertex "):
+            continue
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        tri.append(_append_vertex(float(parts[1]), float(parts[2]), float(parts[3])))
+        if len(tri) == 3:
+            face_counts.append(3)
+            face_indices.extend(tri)
+            tri = []
+    return points, face_counts, face_indices
+
+
+def _define_stl_mesh(
+    stage,
+    prim_path,
+    stl_path,
+    color,
+    translate=(0.0, 0.0, 0.0),
+    transform_vertex=_cad_z_to_tcp_minus_y,
+):
+    points, face_counts, face_indices = _read_stl_points_transformed(
+        stl_path, transform_vertex)
+    if not points:
+        raise RuntimeError(f"STL vertex 없음: {stl_path}")
+    mesh = UsdGeom.Mesh.Define(stage, prim_path)
+    mesh.CreatePointsAttr(points)
+    mesh.CreateFaceVertexCountsAttr(face_counts)
+    mesh.CreateFaceVertexIndicesAttr(face_indices)
+    mesh.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    xs = [float(p[0]) for p in points]
+    ys = [float(p[1]) for p in points]
+    zs = [float(p[2]) for p in points]
+    mesh.CreateExtentAttr([
+        Gf.Vec3f(min(xs), min(ys), min(zs)),
+        Gf.Vec3f(max(xs), max(ys), max(zs)),
+    ])
+    if any(abs(float(v)) > 1e-12 for v in translate):
+        UsdGeom.Xformable(mesh.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(*translate))
+    return mesh
 
 # tcp prim 자동 탐색
 TCP_PRIM_PATH = None
@@ -627,130 +769,78 @@ if TCP_PRIM_PATH is None:
 else:
     print(f"[OK] tcp prim 발견: {TCP_PRIM_PATH}")
 
-    # 기존 prim 있으면 제거 (반복 실행 안전)
-    for _old in ["paint_roller", "roller_rod"]:
+    # 기존 prim 있으면 제거 (반복 실행 안전). apriltag 는 이전 버전 잔여물 정리용.
+    for _old in [
+        "paint_roller", "roller_rod", "aft200", "roller_support",
+        "rr_00a_b_eoat", "d405", "realsense_d405", "apriltag",
+    ]:
         _pp = TCP_PRIM_PATH + "/" + _old
         if stage.GetPrimAtPath(_pp).IsValid():
             stage.RemovePrim(_pp)
 
-    # 롤러 cylinder
-    _roller_path = TCP_PRIM_PATH + "/paint_roller"
-    _roller = UsdGeom.Cylinder.Define(stage, _roller_path)
-    _roller.CreateHeightAttr(ROLLER_LENGTH)
-    _roller.CreateRadiusAttr(ROLLER_RADIUS)
-    _roller.CreateAxisAttr(_roller_long_axis)
-    _roller.CreateDisplayColorAttr([Gf.Vec3f(0.95, 0.95, 0.92)])  # 흰색
-    UsdGeom.Xformable(_roller.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(*_offset_v))
+    # AFT200 sensor body. 실제 STL visual 을 TCP 기준에 붙이고, CAD +Z 를 TCP -Y 로 회전.
+    _aft_path = TCP_PRIM_PATH + "/aft200"
+    try:
+        _define_stl_mesh(stage, _aft_path, AFT200_STL_PATH, (0.32, 0.34, 0.38))
+    except Exception as _aft_e:
+        print(f"[WARN] AFT200 STL 로드 실패 → bbox proxy 사용: {_aft_e}")
+        _aft = UsdGeom.Cube.Define(stage, _aft_path)
+        _aft.CreateSizeAttr(1.0)
+        _aft.CreateDisplayColorAttr([Gf.Vec3f(0.18, 0.20, 0.24)])
+        _aft_xf = UsdGeom.Xformable(_aft.GetPrim())
+        _aft_xf.AddTranslateOp().Set(Gf.Vec3d(*AFT200_CENTER))
+        _aft_xf.AddScaleOp().Set(Gf.Vec3f(*AFT200_SIZE))
 
-    # TCP ↔ 롤러 연결 막대 (시각용, 회색)
-    _rod_path = TCP_PRIM_PATH + "/roller_rod"
-    _rod = UsdGeom.Cylinder.Define(stage, _rod_path)
-    _rod.CreateHeightAttr(ROLLER_OFFSET)
-    _rod.CreateRadiusAttr(0.010)
-    _rod.CreateAxisAttr(_axis_letter)  # long axis = TCP local axis 방향 (부호 무관)
-    _rod.CreateDisplayColorAttr([Gf.Vec3f(0.5, 0.5, 0.55)])  # 회색 (금속)
-    UsdGeom.Xformable(_rod.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(*_mid_v))
+    # RR-00A_B EOAT no-camera. mesh origin 은 bbox center 이므로, 가까운 면이
+    # AFT200 출력면(TCP local y=-0.0522)에 오도록 center 를 -Y 방향으로 이동한다.
+    _eoat_path = TCP_PRIM_PATH + "/rr_00a_b_eoat"
+    try:
+        _define_stl_mesh(
+            stage, _eoat_path, EOAT_STL_PATH, (0.72, 0.70, 0.66),
+            translate=EOAT_MESH_CENTER_OFFSET,
+        )
+    except Exception as _eoat_e:
+        print(f"[WARN] EOAT STL 로드 실패 → support/roller proxy 사용: {_eoat_e}")
+        _support_path = TCP_PRIM_PATH + "/roller_support"
+        _support = UsdGeom.Cylinder.Define(stage, _support_path)
+        _support.CreateHeightAttr(ROLLER_FORWARD_REACH)
+        _support.CreateRadiusAttr(ROLLER_SUPPORT_RADIUS)
+        _support.CreateAxisAttr(_axis_letter)
+        _support.CreateDisplayColorAttr([Gf.Vec3f(0.5, 0.5, 0.55)])
+        UsdGeom.Xformable(_support.GetPrim()).AddTranslateOp().Set(
+            Gf.Vec3d(*_support_mid_v))
 
-    print(f"[OK] 페인트 롤러 부착: {_roller_path}")
-    print(f"     손잡이 방향 (TCP local): {ROLLER_AXIS} offset={ROLLER_OFFSET}m")
-    print(f"     롤러: Φ{ROLLER_RADIUS*2}m × {ROLLER_LENGTH}m, long axis=TCP local +{_roller_long_axis}")
-    print(f"     연결 막대: 길이 {ROLLER_OFFSET}m, Φ0.02m, long axis=TCP local {_axis_letter}")
+        _roller_path = TCP_PRIM_PATH + "/paint_roller"
+        _roller = UsdGeom.Cylinder.Define(stage, _roller_path)
+        _roller.CreateHeightAttr(ROLLER_LENGTH)
+        _roller.CreateRadiusAttr(ROLLER_RADIUS)
+        _roller.CreateAxisAttr(_roller_long_axis)
+        _roller.CreateDisplayColorAttr([Gf.Vec3f(0.95, 0.95, 0.92)])
+        UsdGeom.Xformable(_roller.GetPrim()).AddTranslateOp().Set(
+            Gf.Vec3d(*_roller_center_v))
+    else:
+        _roller_path = _eoat_path
 
-# ---- AprilTag 부착 (Phase 5 일감 2.3 eye-to-hand calibration target) ------------
-# 작은 mesh plane + UsdPreviewSurface 텍스처 (tag36h11 ID 0). TCP local +Z 6cm,
-# 법선 = TCP local +Z. 검정/흰 marker pattern 으로 apriltag_ros 가 detect.
-# Calibration script 가 ground_truth.json 의 apriltag_tcp_local_pose 와 비교.
-from pxr import UsdShade                              # noqa: E402
+    _d405_path = TCP_PRIM_PATH + "/d405"
+    try:
+        _define_stl_mesh(
+            stage, _d405_path, D405_STL_PATH, (0.94, 0.94, 0.90),
+            transform_vertex=_d405_stl_to_tcp_frame,
+        )
+    except Exception as _d405_e:
+        print(f"[WARN] D405 STL 로드 실패 → bbox proxy 사용: {_d405_e}")
+        _d405 = UsdGeom.Cube.Define(stage, _d405_path)
+        _d405.CreateSizeAttr(1.0)
+        _d405.CreateDisplayColorAttr([Gf.Vec3f(0.94, 0.94, 0.90)])
+        _d405_xf = UsdGeom.Xformable(_d405.GetPrim())
+        _d405_xf.AddTranslateOp().Set(Gf.Vec3d(*D405_COLLISION_CENTER))
+        _d405_xf.AddScaleOp().Set(Gf.Vec3f(*D405_SIZE))
 
-APRILTAG_PNG = "/home/minjea/sketch_robot_ws/isaac_assets/apriltag/tag36_11_00000_flipV.png"
-APRILTAG_SIZE = 0.15
-# 2.4 fix#2: link6 박힘 회피 위해 TCP local +Z (6cm) 로 되돌림. tag normal 은 TCP
-# 의 +Z 방향. 카메라 face-on 은 별도 — robot wrist 를 calibration pose 로 회전.
-APRILTAG_TCP_OFFSET = (0.0, 0.0, 0.06)               # TCP local +Z 6cm (원래대로)
-APRILTAG_TCP_QUAT_XYZW = (0.0, 0.0, 0.0, 1.0)        # identity (원래대로)
-
-if TCP_PRIM_PATH is not None:
-    _tag_path = TCP_PRIM_PATH + "/apriltag"
-    if stage.GetPrimAtPath(_tag_path).IsValid():
-        stage.RemovePrim(_tag_path)                  # 반복 실행 안전
-
-    # 4-vertex quad mesh in TCP local X-Y plane (normal +Z).
-    _half = APRILTAG_SIZE / 2.0
-    _tag_mesh = UsdGeom.Mesh.Define(stage, _tag_path)
-    _tag_mesh.CreatePointsAttr([
-        Gf.Vec3f(-_half, -_half, 0.0),
-        Gf.Vec3f( _half, -_half, 0.0),
-        Gf.Vec3f( _half,  _half, 0.0),
-        Gf.Vec3f(-_half,  _half, 0.0),
-    ])
-    _tag_mesh.CreateFaceVertexCountsAttr([4])
-    _tag_mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
-    _tag_mesh.CreateNormalsAttr([Gf.Vec3f(0.0, 0.0, 1.0)] * 4)
-    _tag_mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
-    # extent for renderer bbox
-    _tag_mesh.CreateExtentAttr([
-        Gf.Vec3f(-_half, -_half, 0.0),
-        Gf.Vec3f( _half,  _half, 0.0),
-    ])
-    # UV primvar — PNG 가 plane 전체에 0~1 정사각형으로 매핑.
-    _uv_primvar = UsdGeom.PrimvarsAPI(_tag_mesh.GetPrim()).CreatePrimvar(
-        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-    )
-    _uv_primvar.Set([
-        Gf.Vec2f(0.0, 1.0),   # vertex 0 (-X, -Y) → UV (0, 1)
-        Gf.Vec2f(1.0, 1.0),   # vertex 1 ( X, -Y) → UV (1, 1)
-        Gf.Vec2f(1.0, 0.0),   # vertex 2 ( X,  Y) → UV (1, 0)
-        Gf.Vec2f(0.0, 0.0),   # vertex 3 (-X,  Y) → UV (0, 0)
-    ])
-    # Translate + Orient (TCP local pose). Orient 는 APRILTAG_TCP_QUAT_XYZW 가
-    # identity 여도 USD 컨벤션상 명시 — ground_truth.json 과 1:1 매칭.
-    _tag_xf = UsdGeom.Xformable(_tag_mesh.GetPrim())
-    _tag_xf.AddTranslateOp().Set(Gf.Vec3d(*APRILTAG_TCP_OFFSET))
-    _tag_xf.AddOrientOp().Set(Gf.Quatf(
-        float(APRILTAG_TCP_QUAT_XYZW[3]),                 # w
-        float(APRILTAG_TCP_QUAT_XYZW[0]),                 # x
-        float(APRILTAG_TCP_QUAT_XYZW[1]),                 # y
-        float(APRILTAG_TCP_QUAT_XYZW[2]),                 # z
-    ))
-
-    # Material graph: Mesh → MaterialBindingAPI → Material → PBR surface ← Texture ← UV reader.
-    _mat_path = _tag_path + "/Material"
-    _material = UsdShade.Material.Define(stage, _mat_path)
-
-    _pbr_shader = UsdShade.Shader.Define(stage, _mat_path + "/PBRShader")
-    _pbr_shader.CreateIdAttr("UsdPreviewSurface")
-    _pbr_shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.9)
-    _pbr_shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
-
-    _st_reader = UsdShade.Shader.Define(stage, _mat_path + "/STReader")
-    _st_reader.CreateIdAttr("UsdPrimvarReader_float2")
-    _st_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
-    _st_reader_out = _st_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
-
-    _tex_shader = UsdShade.Shader.Define(stage, _mat_path + "/Texture")
-    _tex_shader.CreateIdAttr("UsdUVTexture")
-    _tex_shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(
-        Sdf.AssetPath(APRILTAG_PNG)
-    )
-    _tex_shader.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
-    _tex_shader.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
-        _st_reader_out
-    )
-    _tex_rgb = _tex_shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
-
-    _pbr_shader.CreateInput(
-        "diffuseColor", Sdf.ValueTypeNames.Color3f
-    ).ConnectToSource(_tex_rgb)
-    _material.CreateSurfaceOutput().ConnectToSource(
-        _pbr_shader.ConnectableAPI(), "surface"
-    )
-    UsdShade.MaterialBindingAPI(_tag_mesh.GetPrim()).Bind(_material)
-
-    print(f"[OK] AprilTag 부착: {_tag_path}")
-    print(f"     size={APRILTAG_SIZE}m, TCP local offset={APRILTAG_TCP_OFFSET}, "
-          f"texture={APRILTAG_PNG.split('/')[-1]}")
-else:
-    print(f"[WARN] TCP_PRIM_PATH 없음 — AprilTag 부착 skip")
+    print(f"[OK] AFT200 + RR-00A_B EOAT(no-camera) + D405 부착: {_aft_path}, {_roller_path}, {_d405_path}")
+    print(f"     장착 방향 (TCP local): {TOOL_AXIS}, tip offset={EOAT_TIP_OFFSET:.6f}m")
+    print(f"     AFT200: STL visual={AFT200_STL_PATH}, collision proxy size={AFT200_SIZE}")
+    print(f"     EOAT(no-camera): STL visual={EOAT_STL_PATH}, center offset={EOAT_MESH_CENTER_OFFSET}")
+    print(f"     D405: official STL visual={D405_STL_PATH}, link pos={D405_LINK_POSITION}, collision center={D405_COLLISION_CENTER}")
 
 # ==== ROS2 OmniGraph (Step 5) ==================================================
 
@@ -789,15 +879,12 @@ NT_PUB_IMU = _node_type("isaacsim.ros2.bridge.ROS2PublishImu",
 
 keys = og.Controller.Keys
 
-# ---- TFGraph (RB10 articulation tree + ZED 카메라 TF publish) -----------------
-# parentPrim=/World 기준, target 으로 articulation root 와 카메라.
-# PublishTransformTree 는 articulation root 를 받으면 그 하위 link 들을 자동 추적.
+# ---- TFGraph (ZED 카메라 TF publish) -----------------------------------------
+# 로봇 TF 는 robot_state_publisher 가 /joint_states + 같은 URDF 로 만든다.
+# Isaac 은 camera TF 만 publish 하여 RViz/MoveIt 과 TF authority 를 분리한다.
 _tf_targets = [
-    Sdf.Path(ARTICULATION_PATH),
     Sdf.Path(CAMERA_PATH),         # ZED X USD reference root — base_link/ZED_X/Camera* 자동
 ]
-if TCP_PRIM_PATH is not None:
-    _tf_targets.append(Sdf.Path(TCP_PRIM_PATH))
 
 og.Controller.edit(
     {"graph_path": "/World/TFGraph", "evaluator_name": "execution"},
@@ -992,10 +1079,9 @@ print(f"                 {ZED_DEPTH_TOPIC}")
 print(f"                 {ZED_RGB_INFO_TOPIC}, {ZED_DEPTH_INFO_TOPIC}")
 print(f"                 {ZED_IMU_TOPIC}")
 
-# ---- Ground truth dump (Phase 5 일감 2.3 — calibration baseline) ----------------
-# 학회 contribution: AprilTag eye-to-hand calibration 결과를 sim ground truth 와
-# 정량 비교. calibration script 가 이 JSON 을 읽어 5 method (Tsai/Park/Horaud/
-# Andreff/Daniilidis) 별 오차 측정.
+# ---- Ground truth dump --------------------------------------------------------
+# sim scene/perception 진단용 기준값. camera pose, 벽, 작업영역 corner 를
+# 동일 기준(World/real base)으로 읽을 수 있게 저장한다.
 import json as _json                                          # noqa: E402
 
 def _world_pose_dict(prim_path):
@@ -1012,6 +1098,32 @@ def _world_pose_dict(prim_path):
         "rotation_xyzw": [float(_i[0]), float(_i[1]), float(_i[2]), float(_q.GetReal())],
     }
 
+def _quat_mul_xyzw(a, b):
+    """xyzw quaternion composition: result = a * b."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [
+        aw*bx + ax*bw + ay*bz - az*by,
+        aw*by - ax*bz + ay*bw + az*bx,
+        aw*bz + ax*by - ay*bx + az*bw,
+        aw*bw - ax*bx - ay*by - az*bz,
+    ]
+
+def _camera_optical_world_pose_dict(prim_path):
+    """USD Camera prim pose 를 ROS optical frame convention 으로 변환.
+
+    Isaac USD camera prim 과 ROS2CameraHelper 의 optical frame 은 local X축 기준
+    180도 차이가 난다. calibration GT 는 ROS optical frame 기준이어야 한다.
+    """
+    pose = _world_pose_dict(prim_path)
+    if pose is None:
+        return None
+    pose["rotation_xyzw"] = _quat_mul_xyzw(
+        pose["rotation_xyzw"],
+        [1.0, 0.0, 0.0, 0.0],  # local Rx(180deg)
+    )
+    return pose
+
 _gt = {
     "schema_version": 1,
     "units": "meters / quaternion(xyzw)",
@@ -1022,7 +1134,8 @@ _gt = {
             "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
         },
         "size_xyz": WALL_SIZE.tolist(),
-        "front_surface_y": _WALL_FRONT_Y,
+        "front_surface_x": _WALL_FRONT_X,
+        "front_surface_normal": [-1.0, 0.0, 0.0],
     },
     "work_area": {
         "size_wh": [WORK_AREA_W, WORK_AREA_H],
@@ -1032,28 +1145,13 @@ _gt = {
             for _cid, _w in WORK_AREA_CORNERS
         ],
     },
-    "camera_optical_world_pose": _world_pose_dict(_LEFT_CAM),
-    "camera_right_optical_world_pose": _world_pose_dict(_RIGHT_CAM),
-    # ARTICULATION_PATH 가 비-Xformable (RigidBody 내부 prim) 이면 None 가능 →
-    # RB10 root (/World/rb10) 의 world pose 로 fallback. /World/rb10 은 Xform 이고
-    # -90° Z 회전이 authored 되어 있어 실제 link0 world pose 와 일치. 최후엔 identity.
-    "robot_base_world_pose": (
-        _world_pose_dict(ARTICULATION_PATH)
-        or _world_pose_dict(RB10_PRIM_PATH)
-        or {"translation": [0.0, 0.0, 0.0], "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]}
-    ),
-    "apriltag": {
-        "tcp_local_pose": {
-            "translation": list(APRILTAG_TCP_OFFSET),
-            "rotation_xyzw": list(APRILTAG_TCP_QUAT_XYZW),
-        },
-        "size_m": APRILTAG_SIZE,
-        "family": "tag36h11",
-        "id": 0,
-        "tcp_prim_path": TCP_PRIM_PATH,
-        "tcp_world_pose_at_startup": (
-            _world_pose_dict(TCP_PRIM_PATH) if TCP_PRIM_PATH else None
-        ),
+    "camera_optical_world_pose": _camera_optical_world_pose_dict(_LEFT_CAM),
+    "camera_right_optical_world_pose": _camera_optical_world_pose_dict(_RIGHT_CAM),
+    # MoveIt 의 robot base 는 URDF link0 frame 이며, launch static TF 에서
+    # world(real base) -> link0(+90deg) 관계를 제공한다.
+    "robot_base_world_pose": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation_xyzw": [0.0, 0.0, 0.7071067811865475, 0.7071067811865476],
     },
     "topics": {
         "rgb": ZED_RGB_TOPIC,
@@ -1082,21 +1180,19 @@ print(f"  RB10:        link0=(0,0,0), articulation={ARTICULATION_PATH}")
 print(f"  Table:       center={TABLE_CENTER.tolist()} size={TABLE_SIZE.tolist()}")
 print(f"  Steel plate: center={PLATE_CENTER.tolist()} size={PLATE_SIZE.tolist()}")
 print(f"  Wall:        center={WALL_CENTER.tolist()} size={WALL_SIZE.tolist()} "
-      f"(front y={_WALL_FRONT_Y})")
+      f"(front x={_WALL_FRONT_X}, normal=-X)")
 print(f"  Work area:   {WORK_AREA_W}m × {WORK_AREA_H}m yellow outline at wall center")
-print(f"  AprilTag:    tag36h11 id=0, size={APRILTAG_SIZE}m, "
-      f"TCP local +Z={APRILTAG_TCP_OFFSET[2]}m, normal=TCP+Z")
 print(f"  Camera EYE:  {tuple(CAMERA_EYE)} → target={tuple(CAMERA_TARGET)}")
 print(f"  Mount seg1:  center={MOUNT_SEG1_CENTER.tolist()} size={MOUNT_SEG1_SIZE.tolist()}")
 print(f"  Mount seg2:  center={MOUNT_SEG2_CENTER.tolist()} size={MOUNT_SEG2_SIZE.tolist()}")
 print(f"  Mount ball:  center={MOUNT_BALL_CENTER.tolist()} r={MOUNT_BALL_RADIUS}")
 print(f"  Mount bolt:  center={MOUNT_BOLT_CENTER.tolist()} r={MOUNT_BOLT_RADIUS} h={MOUNT_BOLT_HEIGHT}")
-print(f"  Roller:      tcp local +{ROLLER_AXIS} offset={ROLLER_OFFSET}m, Φ{ROLLER_RADIUS*2}m × {ROLLER_LENGTH}m")
+print(f"  EOAT:        tcp -> AFT200 -> RR-00A_B(no-camera)+D405, tcp local {TOOL_AXIS}, "
+      f"tip offset={EOAT_TIP_OFFSET:.6f}m, mesh={EOAT_STL_PATH}")
 print(f"  ROS topics:  /joint_states, /joint_command, /tf, /clock,")
 print(f"               /zed/zed_node/rgb/color/rect/image (+camera_info),")
 print(f"               /zed/zed_node/depth/depth_registered (+camera_info),")
 print(f"               /zed/zed_node/imu/data")
 print(f"  Ground truth: {_GT_PATH}")
-print(f"  Pose 적용: CALIB_POSE (calibration) — roller +Z(up), AprilTag camera face-on 기대")
-print(f"             일감 2.5 완료 후 'READY_POSE_DICT = WORK_POSE' 로 변경 (roller -Y/wall)")
+print(f"  Pose 적용: WORK_POSE (real RB10 joint pose; scene/collision coords are base-frame)")
 print("=" * 60)

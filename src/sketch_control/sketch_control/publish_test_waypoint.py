@@ -23,9 +23,10 @@ from tf2_ros import Buffer, TransformListener
 BASE_FRAME = 'link0'
 EE_FRAME = 'tcp'
 
-# 보드 표면 위 한 점 (link0 기준).
-# 보드 가시영역: y ∈ [-0.60, +0.30], z ∈ [0, 0.90], 평면 x = 0.80.
-TARGET_X = 0.80
+# 보드 표면 앞 롤러 중심점 (link0/base 기준).
+# 벽 front surface: x = +0.80, normal = -X.
+# waypoint 는 roller radius + clearance 만큼 자유공간 쪽에 둔다.
+TARGET_X = 0.773
 TARGET_Y = 0.0
 TARGET_Z = 0.45
 

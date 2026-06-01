@@ -1,21 +1,24 @@
 # 작업 대상 + 환경 물체 정의. Isaac Sim + sketch_ui + moveit_executor 가 공유.
-# 좌표계: world = link0 (RB10 base), TCP frame 정렬, 단위 m.
+# 좌표계: world = link0 (RB10 base), 단위 m.
+# 기존 TCP축 측정값은 base 좌표로 변환해 기록한다:
+#   base_xyz = (-tcp_y, tcp_x, tcp_z)
 # wall 만 sketch 대상 (sketch_face + ee_orientation 필요).
 # 나머지는 collision 회피 only.
 objects:
   - name: wall
     shape: box
-    position: [0.0, -0.805, 0.5]
-    size: [1.0, 0.05, 1.0]
+    position: [0.81, 0.0, 0.5]
+    size: [0.02, 2.0, 1.5]
     color: [0.95, 0.95, 0.95]
-    sketch_face: "+y"
-    ee_orientation: [-0.067, 0.0, -0.001, 0.998]
+    sketch_face: "-x"
+    # 실제 RB10 base 기준: tcp -Y 가 벽 접근(+X), tcp +Z 가 위(+Z) 방향.
+    ee_orientation: [0.0, 0.0, 0.7071067811865475, 0.7071067811865476]
     enabled: true
 
   - name: table
     shape: box
-    position: [0.05, 0.10, -0.4165]
-    size: [0.80, 0.60, 0.813]
+    position: [-0.10, 0.05, -0.4165]
+    size: [0.60, 0.80, 0.813]
     color: [0.4, 0.3, 0.2]
     enabled: true
 
@@ -28,23 +31,39 @@ objects:
 
   - name: mount_seg1
     shape: box
-    position: [0.2, 0.35, 0.015]
-    size: [0.05, 0.3, 0.05]
+    position: [-0.35, 0.2, 0.015]
+    size: [0.3, 0.05, 0.05]
     color: [0.7, 0.7, 0.7]
     enabled: true
 
   - name: mount_seg2
     shape: box
-    position: [0.2, 0.5, 0.465]
+    position: [-0.5, 0.2, 0.465]
     size: [0.05, 0.05, 0.85]
     color: [0.7, 0.7, 0.7]
     enabled: true
 
   - name: zed_camera
     shape: box
-    position: [0.2, 0.5, 0.915]
-    size: [0.1753, 0.0303, 0.0431]
+    # Isaac Sim CAMERA_EYE = bolt top 0.955m + ZED mesh clearance 0.045m.
+    # Collision box 는 ZED root/base_link 중심을 보수적으로 감싼다.
+    position: [-0.5, 0.2, 1.0]
+    size: [0.08, 0.20, 0.09]
     color: [0.1, 0.1, 0.1]
+    enabled: true
+
+  - name: camera_mount_ballhead
+    shape: box
+    position: [-0.5, 0.2, 0.92]
+    size: [0.05, 0.05, 0.05]
+    color: [0.08, 0.08, 0.08]
+    enabled: true
+
+  - name: camera_mount_bolt
+    shape: box
+    position: [-0.5, 0.2, 0.95]
+    size: [0.008, 0.008, 0.010]
+    color: [0.55, 0.55, 0.60]
     enabled: true
 
 active_target: wall

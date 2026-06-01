@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>sketch_robot — rosbridge 연결 검증</title>
+  <title>sketch_robot — sketch-guided perception UI</title>
   <link rel="stylesheet" href="style.css" />
-  <script src="https://cdn.jsdelivr.net/npm/roslib@1.4.1/build/roslib.min.js"></script>
+  <script src="js/roslib.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>sketch_robot UI — B2 (rosbridge 연결 검증)</h1>
+    <h1>sketch_robot UI — sketch-guided perception</h1>
     <div id="status" class="status connecting">
       <span class="dot"></span>
       <span id="status-text">connecting…</span>
@@ -29,12 +29,17 @@
   </section>
 
   <section class="card">
-    <h2 id="view-card-title">ZED LEFT CAMERA <span id="view-card-topic" class="muted">(/zed/zed_node/left/image_rect_color, sensor_msgs/Image)</span></h2>
+    <h2 id="view-card-title">ZED LEFT CAMERA <span id="view-card-topic" class="muted">(/zed/zed_node/rgb/color/rect/image, sensor_msgs/Image)</span></h2>
 
     <div class="sketch-controls">
       <div class="mode-group" title="View Mode">
         <label><input type="radio" name="view-mode" value="zed_raw" checked /> ZED Raw</label>
         <label><input type="radio" name="view-mode" value="wall_front" /> Wall Front</label>
+      </div>
+      <div class="mode-group" title="Workflow Mode">
+        <label><input type="radio" name="workflow-mode" value="target" checked /> Target</label>
+        <label><input type="radio" name="workflow-mode" value="work_area" /> Work Area</label>
+        <label><input type="radio" name="workflow-mode" value="path" /> Path</label>
       </div>
     </div>
 
@@ -50,7 +55,9 @@
       </div>
       <button id="btn-undo">Undo</button>
       <button id="btn-clear">Clear</button>
-      <button id="btn-execute" class="primary" disabled>Execute</button>
+      <button id="btn-set-target" class="primary" disabled>Set Target</button>
+      <button id="btn-set-work-area" class="primary" disabled>Set Work Area</button>
+      <button id="btn-execute" class="primary" disabled>Send Path</button>
       <button id="btn-run-robot" class="danger" disabled title="RB10 실제 동작 (확인 후)">Run Robot</button>
       <span class="muted" style="font-size:12px">Line 모드 중 ESC: 진행 중 line 취소</span>
     </div>
@@ -58,6 +65,10 @@
     <div class="row">
       <span class="label">view</span>
       <span id="view-mode-text" class="value">zed_raw</span>
+    </div>
+    <div class="row">
+      <span class="label">workflow</span>
+      <span id="workflow-mode-text" class="value">target</span>
     </div>
     <div class="row">
       <span class="label">sketch mode</span>
@@ -91,7 +102,7 @@
   </section>
 
   <section class="card">
-    <h2>/perception/wall_plane <span class="muted">(geometry_msgs/PoseStamped)</span></h2>
+    <h2>/perception/work_area_plane <span class="muted">(geometry_msgs/PoseStamped)</span></h2>
     <div class="row">
       <span class="label">frame_id</span>
       <span id="frame-id" class="value">—</span>

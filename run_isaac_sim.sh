@@ -35,4 +35,4 @@ echo "LD_LIBRARY_PATH = $LD_LIBRARY_PATH"
 echo "======================"
 
 source ~/isaac_env/bin/activate
-exec isaacsim --exec ~/sketch_robot_ws/src/sketch_control/sketch_control/isaac_sim_ur10.py
+exec isaacsim --exec ~/sketch_robot_ws/src/sketch_control/sketch_control/isaac_sim_rb10.py

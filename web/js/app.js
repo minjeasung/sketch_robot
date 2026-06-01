@@ -1,8 +1,8 @@
-// sketch_robot UI — B2 단계. rosbridge_server 에 연결 + /perception/wall_plane 구독.
-// 이후 단계에서 threejs 시각화 추가 예정. 일단 raw 데이터만 표시.
+// sketch_robot UI — rosbridge 연결 + sketch-guided target/work-area/path.
+// 현재 구현은 Three.js 가 아니라 native canvas overlay 를 사용한다.
 
 const WS_URL = "ws://localhost:9090";
-const WALL_PLANE_TOPIC = "/perception/wall_plane";
+const WORK_AREA_TOPIC = "/perception/work_area_plane";
 const ZED_LEFT_IMAGE_TOPIC = "/zed/zed_node/rgb/color/rect/image";
 
 const $ = (id) => document.getElementById(id);
@@ -42,16 +42,16 @@ ros.on("close", () => {
 setStatus("connecting", "connecting…");
 logEvent(`connecting to ${WS_URL}`);
 
-// ---- /perception/wall_plane 구독 ----
-const wallPlane = new ROSLIB.Topic({
+// ---- /perception/work_area_plane 구독 ----
+const workAreaPlane = new ROSLIB.Topic({
   ros: ros,
-  name: WALL_PLANE_TOPIC,
+  name: WORK_AREA_TOPIC,
   messageType: "geometry_msgs/PoseStamped",
 });
 
 let msgCount = 0;
 
-wallPlane.subscribe((msg) => {
+workAreaPlane.subscribe((msg) => {
   msgCount += 1;
   const stamp = msg.header.stamp;
   const stampStr = `${stamp.sec}.${String(stamp.nanosec).padStart(9, "0")}`;
@@ -67,11 +67,11 @@ wallPlane.subscribe((msg) => {
   $("msg-count").textContent = String(msgCount);
 
   if (msgCount === 1) {
-    logEvent(`first ${WALL_PLANE_TOPIC} message received`);
+    logEvent(`first ${WORK_AREA_TOPIC} message received`);
   }
 });
 
-logEvent(`subscribed to ${WALL_PLANE_TOPIC}`);
+logEvent(`subscribed to ${WORK_AREA_TOPIC}`);
 
 // ---- View mode (ZED Raw / Wall Front) + image subscriber ----
 // 두 view 의 sketch strokes 는 의미가 다름 (원본 카메라 픽셀 vs 벽 평면 픽셀) → 분리 보관.
@@ -229,7 +229,7 @@ document.querySelectorAll('input[name="view-mode"]').forEach((r) => {
   });
 });
 
-// 초기 구독 (default = zed_raw)
+// 초기 구독
 subscribeView(currentView);
 
 
@@ -240,9 +240,10 @@ subscribeView(currentView);
 const sketchCanvas = $("sketch-canvas");
 const sketchCtx = sketchCanvas.getContext("2d");
 
-// view 별로 strokes 분리. 두 view 의 (u, v) 가 다른 의미라 합치면 잘못된 시각.
-const strokesMap = { zed_raw: [], wall_front: [] };
-function currentStrokes() { return strokesMap[currentView]; }
+// workflow 별 stroke 분리. Target/Work Area/Path 의 의미가 다르므로 합치지 않는다.
+const strokesMap = { target: [], work_area: [], path: [] };
+let workflowMode = "target";
+function currentStrokes() { return strokesMap[workflowMode]; }
 
 let currentStroke = null;     // 진행 중 freehand stroke (mousedown ~ mouseup)
 let pendingLine = null;       // Line 모드: 첫 점 찍힌 후 두 번째 클릭 대기 중인 stroke
@@ -268,9 +269,9 @@ function updateSketchStats() {
   $("sketch-strokes-count").textContent = String(cs.length);
   const total = cs.reduce((acc, s) => acc + s.points.length, 0);
   $("sketch-points-count").textContent = String(total);
-  // Execute 버튼은 현재 view 의 stroke 가 1개 이상일 때만 활성.
-  const execBtn = document.getElementById("btn-execute");
-  if (execBtn) execBtn.disabled = cs.length === 0;
+  $("btn-set-target").disabled = workflowMode !== "target" || cs.length === 0 || currentView !== "zed_raw";
+  $("btn-set-work-area").disabled = workflowMode !== "work_area" || cs.length === 0 || currentView !== "zed_raw";
+  $("btn-execute").disabled = workflowMode !== "path" || cs.length === 0 || currentView !== "wall_front";
 }
 
 function redrawSketch() {
@@ -387,6 +388,27 @@ document.querySelectorAll('input[name="sketch-mode"]').forEach((r) => {
   });
 });
 
+function switchWorkflow(mode) {
+  if (!strokesMap[mode]) return;
+  currentStroke = null;
+  pendingLine = null;
+  currentMouse = null;
+  workflowMode = mode;
+  $("workflow-mode-text").textContent = mode;
+  const targetView = mode === "path" ? "wall_front" : "zed_raw";
+  const radio = document.querySelector(`input[name="view-mode"][value="${targetView}"]`);
+  if (radio) radio.checked = true;
+  switchView(targetView);
+  redrawSketch();
+}
+
+document.querySelectorAll('input[name="workflow-mode"]').forEach((r) => {
+  r.addEventListener("change", () => {
+    const mode = document.querySelector('input[name="workflow-mode"]:checked').value;
+    switchWorkflow(mode);
+  });
+});
+
 // ---- Clear / Undo (현재 view 의 strokes 만) ----
 $("btn-clear").addEventListener("click", () => {
   currentStrokes().length = 0;
@@ -403,9 +425,21 @@ $("btn-undo").addEventListener("click", () => {
   }
 });
 
-// ---- Execute: 현재 view 의 모든 strokes 의 point 들을 PoseArray 로 publish ----
+// ---- Publish workflow strokes as PoseArray ---------------------------------
+const TARGET_SELECTION_TOPIC = "/target_selection_pixels";
+const WORK_AREA_PIXELS_TOPIC = "/work_area_pixels";
 const SKETCH_PIXELS_TOPIC = "/sketch_pixels";
 const SKETCH_EXECUTE_TOPIC = "/sketch_execute";
+const targetSelectionPub = new ROSLIB.Topic({
+  ros: ros,
+  name: TARGET_SELECTION_TOPIC,
+  messageType: "geometry_msgs/PoseArray",
+});
+const workAreaPub = new ROSLIB.Topic({
+  ros: ros,
+  name: WORK_AREA_PIXELS_TOPIC,
+  messageType: "geometry_msgs/PoseArray",
+});
 const sketchPub = new ROSLIB.Topic({
   ros: ros,
   name: SKETCH_PIXELS_TOPIC,
@@ -426,12 +460,9 @@ function nowRosTime() {
   };
 }
 
-$("btn-execute").addEventListener("click", () => {
-  const cs = currentStrokes();
-  if (cs.length === 0) return;
-
+function posesFromStrokes(strokes) {
   const poses = [];
-  for (const s of cs) {
+  for (const s of strokes) {
     for (const pt of s.points) {
       poses.push({
         position: { x: pt.u, y: pt.v, z: 0.0 },
@@ -439,16 +470,51 @@ $("btn-execute").addEventListener("click", () => {
       });
     }
   }
+  return poses;
+}
 
+function publishPixels(pub, topicName, frameId, strokes) {
+  const poses = posesFromStrokes(strokes);
+  if (poses.length === 0) return false;
   const msg = new ROSLIB.Message({
     header: {
       stamp: nowRosTime(),
-      frame_id: currentView,   // "zed_raw" 또는 "wall_front" — 수신 측이 어느 view 인지 구별
+      frame_id: frameId,
     },
     poses: poses,
   });
-  sketchPub.publish(msg);
-  logEvent(`published ${poses.length} points to ${SKETCH_PIXELS_TOPIC} (view=${currentView})`);
+  pub.publish(msg);
+  logEvent(`published ${poses.length} points to ${topicName} (frame=${frameId})`);
+  return true;
+}
+
+$("btn-set-target").addEventListener("click", () => {
+  if (workflowMode !== "target" || currentView !== "zed_raw") return;
+  if (publishPixels(targetSelectionPub, TARGET_SELECTION_TOPIC, "zed_raw", currentStrokes())) {
+    const radio = document.querySelector('input[name="workflow-mode"][value="work_area"]');
+    if (radio) radio.checked = true;
+    switchWorkflow("work_area");
+  }
+});
+
+$("btn-set-work-area").addEventListener("click", () => {
+  if (workflowMode !== "work_area" || currentView !== "zed_raw") return;
+  if (publishPixels(workAreaPub, WORK_AREA_PIXELS_TOPIC, "zed_raw", currentStrokes())) {
+    const radio = document.querySelector('input[name="workflow-mode"][value="path"]');
+    if (radio) radio.checked = true;
+    switchWorkflow("path");
+  }
+});
+
+$("btn-execute").addEventListener("click", () => {
+  const cs = currentStrokes();
+  if (cs.length === 0) return;
+  if (workflowMode !== "path" || currentView !== "wall_front") {
+    logEvent("Execute ignored: switch to Wall Front first");
+    return;
+  }
+
+  if (!publishPixels(sketchPub, SKETCH_PIXELS_TOPIC, "wall_front", cs)) return;
 
   // 첫 publish 후부터 Run Robot 활성화
   if (!hasExecuted) {

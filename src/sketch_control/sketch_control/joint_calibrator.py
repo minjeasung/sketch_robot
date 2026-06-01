@@ -1,5 +1,5 @@
 """
-관절 캘리브레이션 UI - 6개 슬라이더로 UR10 관절을 실시간 조작.
+관절 캘리브레이션 UI - 6개 슬라이더로 RB10 관절을 실시간 조작.
 Isaac Sim 의 /joint_command 를 통해 로봇 이동.
 현재 관절 값 + tool0 TF 를 실시간 표시.
 """
@@ -13,17 +13,10 @@ from tf2_ros import Buffer, TransformListener
 import tkinter as tk
 
 
-JOINT_NAMES = [
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-]
+JOINT_NAMES = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
 
 # 각 관절의 기본값 (라디안) — Isaac Sim 의 초기 "ready" 자세와 동일
-DEFAULT_POS = [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+DEFAULT_POS = [0.0005, -0.9343, 2.4246, -1.6293, 1.5675, 0.0]
 
 # 관절 범위
 JOINT_MIN = -np.pi
@@ -64,12 +57,12 @@ class JointCalibrator(Node):
 
 
 BRUSH_LENGTH = 0.15
-WALL_FRONT_X = 1.00  # 벽 앞면
+WALL_FRONT_X = 0.80  # 현재 base 좌표계의 벽 앞면
 
 
 def run_gui(node: JointCalibrator):
     root = tk.Tk()
-    root.title("UR10 Joint Calibrator")
+    root.title("RB10 Joint Calibrator")
     root.geometry("600x820")
 
     sliders = []
@@ -81,7 +74,7 @@ def run_gui(node: JointCalibrator):
             value_labels[i].config(text=f"{v:+.3f} rad ({np.degrees(v):+.1f}°)")
         node.publish_cmd(pos)
 
-    tk.Label(root, text="UR10 관절 슬라이더 (라디안)",
+    tk.Label(root, text="RB10 관절 슬라이더 (라디안)",
              font=("Arial", 14, "bold")).pack(pady=8)
 
     for i, name in enumerate(JOINT_NAMES):
@@ -177,7 +170,7 @@ def run_gui(node: JointCalibrator):
 
     tk.Label(root, text=(
         "목표: 붓 방향 (tool0 +Z) = (+1.00, 0.00, 0.00)\n"
-        "      붓 끝이 벽 앞면 (x≈1.00) 근처에 있으면 ✅\n"
+        "      붓 끝이 벽 앞면 (x≈0.80) 근처에 있으면 ✅\n"
         "슬라이더 조정 → 실시간으로 Isaac Sim 로봇이 움직입니다.\n"
         "목표 달성 후 [현재 값 출력] 클릭 → 터미널 값 알려주세요."
     ), justify="left", fg="#555").pack(pady=6)

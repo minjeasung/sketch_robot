@@ -3,8 +3,8 @@
 
 CALIB_POSE 기준 ±N variation 으로 RB10 을 ~20 pose 이동시키며 매번 (FK from /tf,
 AprilTag corners from /detections, K matrix from /zed/.../camera_info) 캡처 →
-cv2.solvePnP(IPPE_SQUARE) 으로 카메라 frame 의 tag pose 산출 →
-cv2.calibrateHandEye(DANIILIDIS) 로 T_camera→robot_base 추정.
+cv2.solvePnP(ITERATIVE) 으로 카메라 frame 의 tag pose 산출 →
+known TCP→tag offset 기반 pose 평균으로 T_camera→robot_base 추정.
 ground_truth.json 의 (camera_optical_world_pose, robot_base_world_pose) 와 비교해
 translation_error_mm + rotation_error_deg sanity check.
 
@@ -103,7 +103,14 @@ class HandEyeCalibrationNode(Node):
         with open(GROUND_TRUTH_PATH) as _f:
             self.gt = json.load(_f)
         self.tag_size = float(self.gt["apriltag"]["size_m"])
-        self.get_logger().info(f"Tag size (from GT): {self.tag_size} m")
+        mesh_size = self.gt["apriltag"].get("mesh_size_m")
+        if mesh_size is None:
+            self.get_logger().info(f"Tag size (from GT): {self.tag_size} m")
+        else:
+            self.get_logger().info(
+                f"Tag detected size (from GT): {self.tag_size} m "
+                f"(mesh {float(mesh_size)} m)"
+            )
         self.get_logger().info(
             f"Config: num_poses={self.config.num_poses}, "
             f"min_valid={self.config.min_valid_poses}, "
@@ -296,6 +303,10 @@ class HandEyeCalibrationNode(Node):
         if not ok:
             return None
         R, _ = cv2.Rodrigues(rvec)
+        # apriltag_ros corner order + flipV texture mapping makes the detected tag
+        # frame differ from the USD mesh physical frame by local Rz(180deg).
+        # Convert PnP output to the physical tag frame stored in ground_truth.json.
+        R = R @ np.diag([-1.0, -1.0, 1.0])
         return R, tvec.flatten()
 
     # ------------------------------------------------------------------
@@ -407,35 +418,29 @@ class HandEyeCalibrationNode(Node):
                 f"SAFE_DELTA 줄이거나 CALIB_POSE 재설정 권장"
             )
 
-        # ---- Calibration (eye-to-hand workaround) -------------------------
-        # cv2.calibrateHandEye 는 eye-in-hand 기본 가정 — gripper2base 입력 그대로
-        # 사용하면 R_err 100°+, t_err m 단위 garbage. eye-to-hand 셋업 (카메라 고정,
-        # tag 가 robot 에) 에서는 T_base←tcp (FK) 를 inverse 한 T_tcp←base 로 넣어야
-        # output 이 T_cam←base 가 됨. 참고: OpenCV forum eye-to-hand workaround.
-        R_tcp_base = []
-        t_tcp_base = []
+        # ---- Calibration (known tcp->tag absolute solve) ------------------
+        # 이 셋업은 고정 카메라 + TCP 에 부착된 AprilTag 이고, tcp->tag offset 을
+        # ground_truth/실측으로 알고 있다. 따라서 각 pose 에서 바로
+        #   T_cam_base = T_cam_tag * inv(T_tcp_tag) * inv(T_base_tcp)
+        # 를 계산한 뒤 평균내는 편이 handEye workaround 보다 모호성이 적다.
+        T_tcp_tag = _pose_dict_to_T(self.gt["apriltag"]["tcp_local_pose"])
+        T_cam_base_samples = []
         for s in samples:
             R_b2t = np.array(s["R_base_tcp"])
             t_b2t = np.array(s["t_base_tcp"])
-            R_inv = R_b2t.T
-            t_inv = -R_inv @ t_b2t
-            R_tcp_base.append(R_inv)
-            t_tcp_base.append(t_inv.reshape(3, 1))
-        R_t2c = [np.array(s["R_cam_tag"]) for s in samples]
-        t_t2c = [np.array(s["t_cam_tag"]).reshape(3, 1) for s in samples]
-        R_solver_out, t_solver_out = cv2.calibrateHandEye(
-            R_gripper2base=R_tcp_base,    # eye-to-hand: inverse FK 넣음
-            t_gripper2base=t_tcp_base,
-            R_target2cam=R_t2c,
-            t_target2cam=t_t2c,
-            method=cv2.CALIB_HAND_EYE_DANIILIDIS,
-        )
-        # eye-to-hand workaround 의 output 은 T_base←cam 의미. GT 와 TF convention
-        # (T_cam←base) 에 맞추려면 한 번 더 inverse. 두 inverse 다 적용해야 정확.
-        T_base_cam = np.eye(4)
-        T_base_cam[:3, :3] = R_solver_out
-        T_base_cam[:3, 3] = np.array(t_solver_out).flatten()
-        T_cam_base = np.linalg.inv(T_base_cam)
+            T_base_tcp = np.eye(4)
+            T_base_tcp[:3, :3] = R_b2t
+            T_base_tcp[:3, 3] = t_b2t
+
+            T_cam_tag = np.eye(4)
+            T_cam_tag[:3, :3] = np.array(s["R_cam_tag"])
+            T_cam_tag[:3, 3] = np.array(s["t_cam_tag"])
+
+            T_cam_base_samples.append(
+                T_cam_tag @ np.linalg.inv(T_tcp_tag) @ np.linalg.inv(T_base_tcp)
+            )
+
+        T_cam_base = _average_transforms(T_cam_base_samples)
         R_cam2base = T_cam_base[:3, :3]
         t_cam2base = T_cam_base[:3, 3]
 
@@ -471,7 +476,7 @@ class HandEyeCalibrationNode(Node):
         print("=" * 60)
         print(f"Num poses captured: {len(samples)} / {len(poses)}")
         print(f"Tag size:           {self.tag_size} m")
-        print(f"Method:             DANIILIDIS")
+        print(f"Method:             DIRECT_KNOWN_TCP_TAG_AVERAGE")
         print()
         print(f"Estimated T_cam→base:")
         print(f"  translation [m]:   "
@@ -499,7 +504,7 @@ class HandEyeCalibrationNode(Node):
 
         # ---- Save JSON ----------------------------------------------------
         out = {
-            "method": "DANIILIDIS",
+            "method": "DIRECT_KNOWN_TCP_TAG_AVERAGE",
             "num_poses": len(samples),
             "num_attempted": len(poses),
             "num_skipped": len(skipped),
@@ -597,6 +602,22 @@ def _pose_dict_to_T(pose):
     T[:3, :3] = _quat_xyzw_to_R(pose["rotation_xyzw"])
     T[:3, 3] = pose["translation"]
     return T
+
+
+def _average_transforms(transforms):
+    """Average SE(3) samples with arithmetic mean translation + SVD rotation."""
+    if not transforms:
+        return np.eye(4)
+    T_avg = np.eye(4)
+    T_avg[:3, 3] = np.mean([T[:3, 3] for T in transforms], axis=0)
+    R_sum = np.sum([T[:3, :3] for T in transforms], axis=0)
+    U, _, Vt = np.linalg.svd(R_sum)
+    R_avg = U @ Vt
+    if np.linalg.det(R_avg) < 0:
+        U[:, -1] *= -1.0
+        R_avg = U @ Vt
+    T_avg[:3, :3] = R_avg
+    return T_avg
 
 
 # =============================================================================

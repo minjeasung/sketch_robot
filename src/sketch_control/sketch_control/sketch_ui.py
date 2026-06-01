@@ -1,13 +1,9 @@
 """
-Sketch UI - 카메라 이미지 위에 스케치 → 3D 웨이포인트 퍼블리시 (벽에 쓰기)
+Sketch UI - yellow work area 정면 view 위에 스케치 → 픽셀 경로 퍼블리시
 
-- /camera/image_raw 구독 → tkinter Canvas에 실시간 표시
-- /camera/camera_info 구독 → intrinsics (K) 추출
-- TF lookup (world → SketchCamera) → extrinsics
-  - USD 카메라 convention (-Z forward) → OpenCV optical (+Z forward) 변환:
-    TF quaternion q 에 q_x180=(1,0,0,0) 을 오른쪽에서 곱함
-- 픽셀 (u,v) → K⁻¹ → optical ray → world ray → x_plane(벽) ���점 → 3D 웨이포인트
-- /sketch_waypoints (PoseArray) 퍼블리시, /execute_trajectory (Bool) 퍼블리시
+- /perception/wall_front_view 구독 → tkinter Canvas에 실시간 표시
+- 마우스 픽셀 경로를 /sketch_pixels 로 발행
+- 3D 변환은 sketch_to_waypoints_node 가 yellow work area plane 기준으로 수행
 """
 import threading
 import numpy as np
@@ -55,12 +51,12 @@ class SketchUI(Node):
         super().__init__("sketch_ui")
 
         # Publishers
-        self.waypoint_pub = self.create_publisher(PoseArray, "/sketch_waypoints", 10)
+        self.waypoint_pub = self.create_publisher(PoseArray, "/sketch_pixels", 10)
         self.execute_pub = self.create_publisher(Bool, "/sketch_execute", 10)
 
         # Subscribers
-        self.create_subscription(Image, "/camera/image_raw", self.on_image, 10)
-        self.create_subscription(CameraInfo, "/camera/camera_info", self.on_caminfo, 10)
+        self.create_subscription(
+            Image, "/perception/wall_front_view", self.on_image, 10)
 
         # TF
         self.tf_buffer = tf2_ros.Buffer()
@@ -99,7 +95,8 @@ class SketchUI(Node):
         self.create_timer(1.0, self._log_available_frames, callback_group=None)
         self._frames_logged = False
 
-        self.get_logger().info("Sketch UI 노드 시작 (TF lookup, 벽에 쓰기 모드)")
+        self.get_logger().info(
+            "Sketch UI 노드 시작 (/perception/wall_front_view -> /sketch_pixels)")
 
     # ---- ROS 콜백 -----------------------------------------------------------
     def on_image(self, msg: Image):
@@ -260,55 +257,28 @@ class SketchUI(Node):
         if len(self.points_px) < 2:
             return
 
-        # TF 갱신
-        if not self.update_camera_tf():
-            self.get_logger().warn("on_release: TF lookup 실패 (world -> SketchCamera)")
-            return
-        if self.K is None:
-            self.get_logger().warn("on_release: CameraInfo 미수신 — K 없음")
-            return
-
         # Catmull-Rom 스플라인 스무딩 + 등간격 재샘플링
         sampled = self._smooth_mouse_points(self.points_px)
 
         pa = PoseArray()
-        pa.header.frame_id = "world"
+        pa.header.frame_id = "wall_front"
         pa.header.stamp = self.get_clock().now().to_msg()
-        valid = 0
-        # EE orientation: active target 의 surface normal 에 맞춰 계산됨
-        ee_qx, ee_qy, ee_qz, ee_qw = map(float, self.ee_quat)
         for (u, v) in sampled:
-            p = self.pixel_to_world(float(u), float(v))
-            if p is None:
-                continue
             pose = Pose()
-            pose.position.x = float(p[0])
-            pose.position.y = float(p[1])
-            pose.position.z = float(p[2])
-            pose.orientation.x = ee_qx
-            pose.orientation.y = ee_qy
-            pose.orientation.z = ee_qz
-            pose.orientation.w = ee_qw
+            pose.position.x = float(np.clip(u, 0, self.img_w - 1))
+            pose.position.y = float(np.clip(v, 0, self.img_h - 1))
+            pose.orientation.w = 1.0
             pa.poses.append(pose)
-            valid += 1
 
-        fc = self._fail_counts
-        self.get_logger().info(
-            f"언프로젝션: ok={valid}/{len(sampled)} "
-            f"[K없음={fc['K_missing']} TF없음={fc['TF_missing']} "
-            f"광선평행={fc['parallel']} t음수={fc['t_negative']}]")
-        # 카운터 리셋
-        self._fail_counts = {"K_missing": 0, "TF_missing": 0, "parallel": 0, "t_negative": 0}
-
-        if valid < 2:
-            self.get_logger().warn("유효한 3D 점이 부족합니다 — 퍼블리시 안 함")
+        if len(pa.poses) < 2:
+            self.get_logger().warn("유효한 픽셀 점이 부족합니다 — 퍼블리시 안 함")
             return
 
         self.waypoint_pub.publish(pa)
         p0 = pa.poses[0]
         self.get_logger().info(
-            f"{valid}개 웨이포인트 퍼블리시 → target={self.active_target_name} | "
-            f"첫점=({p0.position.x:.3f},{p0.position.y:.3f},{p0.position.z:.3f})")
+            f"{len(pa.poses)}개 sketch pixel 퍼블리시 "
+            f"(첫점 u={p0.position.x:.1f}, v={p0.position.y:.1f})")
 
     def _on_target_change(self, new_name):
         self.active_target_name = new_name

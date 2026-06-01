@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:include filename="rr_00a_b_eoat_no_camera.urdf.xacro"/>
+  <xacro:include filename="$(find realsense2_description)/urdf/_d405.urdf.xacro"/>
+
+  <!--
+    Chain:
+      parent(tcp) -> RR-00A_B EOAT no-camera mesh -> Intel RealSense D405
+
+    The EOAT CAD extends along local +Z. On the robot it is installed along
+    TCP local -Y, so the caller should normally use:
+      xyz="0 -0.16745 0" rpy="1.57079632679 0 0"
+  -->
+  <xacro:macro
+    name="rr_00a_b_eoat_no_camera_d405"
+    params="
+      parent
+      prefix
+      xyz
+      rpy
+      mass
+      use_nominal_extrinsics:=true
+      d405_x:=0.00905
+      d405_y:=0.04375
+      d405_z:=-0.09105
+      d405_roll:=0
+      d405_pitch:=-1.57079632679
+      d405_yaw:=-1.57079632679">
+
+    <xacro:rr_00a_b_eoat_no_camera
+      parent="${parent}"
+      prefix="${prefix}eoat_no_camera_"
+      xyz="${xyz}"
+      rpy="${rpy}"
+      mass="${mass}"/>
+
+    <xacro:sensor_d405
+      parent="${prefix}eoat_no_camera_link"
+      name="${prefix}d405"
+      use_nominal_extrinsics="${use_nominal_extrinsics}">
+      <origin xyz="${d405_x} ${d405_y} ${d405_z}" rpy="${d405_roll} ${d405_pitch} ${d405_yaw}"/>
+    </xacro:sensor_d405>
+  </xacro:macro>
+</robot>

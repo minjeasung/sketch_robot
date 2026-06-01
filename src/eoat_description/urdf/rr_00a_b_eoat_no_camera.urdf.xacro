@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:property name="rr_00a_b_eoat_no_camera_visual_mesh" value="package://eoat_description/meshes/rr_00a_b_eoat_no_camera_visual.stl"/>
+  <xacro:property name="rr_00a_b_eoat_no_camera_collision_mesh" value="package://eoat_description/meshes/rr_00a_b_eoat_no_camera_collision.stl"/>
+
+  <xacro:property name="rr_00a_b_eoat_no_camera_size_x" value="0.220"/>
+  <xacro:property name="rr_00a_b_eoat_no_camera_size_y" value="0.113"/>
+  <xacro:property name="rr_00a_b_eoat_no_camera_size_z" value="0.2305"/>
+
+  <xacro:macro name="rr_00a_b_eoat_no_camera" params="parent prefix xyz rpy mass">
+    <link name="${prefix}link">
+      <visual name="${prefix}visual">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${rr_00a_b_eoat_no_camera_visual_mesh}"/>
+        </geometry>
+        <material name="${prefix}warm_gray">
+          <color rgba="0.72 0.70 0.66 1.0"/>
+        </material>
+      </visual>
+
+      <collision name="${prefix}collision">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${rr_00a_b_eoat_no_camera_collision_mesh}"/>
+        </geometry>
+      </collision>
+
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="${mass}"/>
+        <inertia
+          ixx="${mass * (rr_00a_b_eoat_no_camera_size_y * rr_00a_b_eoat_no_camera_size_y + rr_00a_b_eoat_no_camera_size_z * rr_00a_b_eoat_no_camera_size_z) / 12.0}"
+          ixy="0"
+          ixz="0"
+          iyy="${mass * (rr_00a_b_eoat_no_camera_size_x * rr_00a_b_eoat_no_camera_size_x + rr_00a_b_eoat_no_camera_size_z * rr_00a_b_eoat_no_camera_size_z) / 12.0}"
+          iyz="0"
+          izz="${mass * (rr_00a_b_eoat_no_camera_size_x * rr_00a_b_eoat_no_camera_size_x + rr_00a_b_eoat_no_camera_size_y * rr_00a_b_eoat_no_camera_size_y) / 12.0}"/>
+      </inertial>
+    </link>
+
+    <joint name="${prefix}fixed_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="${prefix}link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+</robot>

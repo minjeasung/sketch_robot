@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rr_00a_b_eoat_standalone">
+  <xacro:arg name="mass" default="1.0"/>
+  <xacro:arg name="xyz" default="0 0 0"/>
+  <xacro:arg name="rpy" default="0 0 0"/>
+
+  <link name="base_link"/>
+
+  <xacro:include filename="rr_00a_b_eoat.urdf.xacro"/>
+  <xacro:rr_00a_b_eoat
+    parent="base_link"
+    prefix="eoat_"
+    xyz="$(arg xyz)"
+    rpy="$(arg rpy)"
+    mass="$(arg mass)"/>
+</robot>

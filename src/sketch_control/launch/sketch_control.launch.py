@@ -4,9 +4,10 @@
 터미널 2: 이 런치 파일 (robot_state_publisher + MoveIt2 + 스케치 UI)
 """
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, FindExecutable, PathJoinSubstitution
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.descriptions import ParameterValue
@@ -15,6 +16,8 @@ import os
 
 
 def generate_launch_description():
+    use_sim_depth_pointcloud = LaunchConfiguration('use_sim_depth_pointcloud')
+
     # ---- robot_description (xacro -> URDF) --------------------------------
     robot_description_content = Command([
         PathJoinSubstitution([FindExecutable(name="xacro")]), " ",
@@ -64,6 +67,50 @@ def generate_launch_description():
         output='screen',
     )
 
+    # ---- ZED perception pipeline ------------------------------------------
+    depth_to_pointcloud_node = Node(
+        package='sketch_control',
+        executable='depth_to_pointcloud',
+        name='depth_to_pointcloud',
+        output='screen',
+        condition=IfCondition(use_sim_depth_pointcloud),
+    )
+
+    wall_detector_node = Node(
+        package='sketch_control',
+        executable='wall_detector',
+        name='wall_detector',
+        output='screen',
+    )
+
+    target_selector_node = Node(
+        package='sketch_control',
+        executable='target_selector',
+        name='target_selector',
+        output='screen',
+    )
+
+    wall_projector_node = Node(
+        package='sketch_control',
+        executable='wall_projector',
+        name='wall_projector',
+        output='screen',
+    )
+
+    sketch_to_waypoints_node = Node(
+        package='sketch_control',
+        executable='sketch_to_waypoints',
+        name='sketch_to_waypoints',
+        output='screen',
+    )
+
+    environment_scanner_node = Node(
+        package='sketch_control',
+        executable='environment_scanner',
+        name='environment_scanner',
+        output='screen',
+    )
+
     # ---- Static TF: world -> World (Isaac Sim 은 "World", URDF 는 "world") --
     static_tf_world_bridge = Node(
         package="tf2_ros",
@@ -73,14 +120,6 @@ def generate_launch_description():
                    "--x", "0", "--y", "0", "--z", "0",
                    "--roll", "0", "--pitch", "0", "--yaw", "0"],
         output="log",
-    )
-
-    # ---- 용접 비드 시각화 (RViz MarkerArray) ------------------------------
-    weld_visualizer_node = Node(
-        package='sketch_control',
-        executable='weld_visualizer',
-        name='weld_visualizer',
-        output='screen',
     )
 
     # ---- ROS-TCP-Endpoint (Unity 연결용 TCP 서버) -------------------------
@@ -96,11 +135,20 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'use_sim_depth_pointcloud',
+            default_value='true',
+            description='Isaac Sim depth image 를 PointCloud2 로 변환할지 여부'),
         robot_state_publisher_node,
         static_tf_world_bridge,
         moveit_launch,
+        depth_to_pointcloud_node,
+        wall_detector_node,
+        target_selector_node,
+        wall_projector_node,
+        sketch_to_waypoints_node,
+        environment_scanner_node,
         sketch_ui_node,
         moveit_executor_node,
-        weld_visualizer_node,
         ros_tcp_endpoint_node,
     ])

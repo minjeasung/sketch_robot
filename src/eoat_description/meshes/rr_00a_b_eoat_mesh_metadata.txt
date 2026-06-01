@@ -1,0 +1,9 @@
+RR-00A_B__EOAT STEP to STL conversion metadata
+source: /home/minjea/Downloads/RR-00A_B__EOAT.step
+source_unit: millimeter
+output_unit: meter
+output_origin: STL visual mesh bounding-box center subtracted before scaling
+raw_mesh_bbox_min_mm: -263.283081055 262.249481201 747.679687500
+raw_mesh_bbox_max_mm: -43.283088684 375.249481201 978.179687500
+raw_mesh_bbox_center_mm: -153.283084869 318.749481201 862.929687500
+urdf_mesh_bbox_size_m: 0.219999992 0.113000000 0.230500000

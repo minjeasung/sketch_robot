@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="rr_00a_b_eoat_no_camera_standalone">
+  <xacro:arg name="mass" default="1.0"/>
+  <xacro:arg name="xyz" default="0 0 0"/>
+  <xacro:arg name="rpy" default="0 0 0"/>
+
+  <link name="base_link"/>
+
+  <xacro:include filename="rr_00a_b_eoat_no_camera.urdf.xacro"/>
+  <xacro:rr_00a_b_eoat_no_camera
+    parent="base_link"
+    prefix="eoat_no_camera_"
+    xyz="$(arg xyz)"
+    rpy="$(arg rpy)"
+    mass="$(arg mass)"/>
+</robot>
